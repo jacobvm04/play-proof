@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+.env
+.env.local
+*.log
+.DS_Store
+data/db.json
+public/clips/*
+!public/clips/.gitkeep
+src/contracts/PlayProof.json

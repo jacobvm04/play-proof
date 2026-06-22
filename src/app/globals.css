@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: radial-gradient(1200px 600px at 70% -10%, rgba(124, 92, 255, 0.18), transparent 60%),
+    radial-gradient(1000px 500px at 0% 0%, rgba(34, 211, 238, 0.1), transparent 55%), #0a0a0f;
+  color: #e7e7f0;
+  min-height: 100vh;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-edge bg-panel/80 backdrop-blur p-5;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-edge bg-panel2 px-2.5 py-1 text-xs font-medium text-muted;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-white hover:bg-brand/90 shadow-glow;
+  }
+  .btn-ghost {
+    @apply btn border border-edge bg-panel2 text-white hover:border-brand/60;
+  }
+  .label {
+    @apply text-[11px] uppercase tracking-wider text-muted;
+  }
+  .stat {
+    @apply text-2xl font-bold tracking-tight;
+  }
+}
+
+/* Animated gradient bar used in the live pipeline. */
+.pipeline-fill {
+  background: linear-gradient(90deg, #7c5cff, #22d3ee, #7c5cff);
+  background-size: 200% 100%;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2a3a;
+  border-radius: 8px;
+}
