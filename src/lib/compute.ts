@@ -18,13 +18,18 @@
 // so the "0G Compute" integration point is visible whether or not it's live.
 // ────────────────────────────────────────────────────────────────────────────
 
-import crypto from "node:crypto";
-import type {
-  AnalysisResult,
-  ClipLabels,
-  ComputeProvenance,
-  ProofOfPlay,
-} from "./types";
+import type { AnalysisResult, ClipLabels, ComputeProvenance } from "./types";
+import {
+  APPROVAL_THRESHOLD,
+  BLANK_BYTES_THRESHOLD,
+  GAME_BY_LABEL,
+  LABEL_ACTIONS,
+  pickActions,
+  resolveLabel,
+  scoreProofOfPlay,
+  sha256,
+  trainingValue,
+} from "./scoring";
 
 export type AnalyzeInput = {
   bytes: Buffer;
@@ -38,93 +43,9 @@ export type AnalyzeInput = {
   seenHashes: string[];
 };
 
-// Canonical action vocabulary, grouped by the bounty label it answers.
-const LABEL_ACTIONS: Record<string, string[]> = {
-  parkour: ["jump", "sprint", "fall", "recovery", "retry", "climb"],
-  aim_correction: ["aim", "flick", "track", "recoil_control", "headshot", "reposition"],
-  racing: ["accelerate", "brake", "drift", "overtake", "corner", "racing_line"],
-  dialogue: ["dialogue", "choice", "branch", "npc_interact", "quest_accept"],
-  boss_fail: ["attack", "dodge", "block", "death", "retry", "phase_transition"],
-  default: ["move", "interact", "combat", "navigate", "menu"],
-};
-
-const GAME_BY_LABEL: Record<string, string> = {
-  parkour: "Minecraft-style parkour",
-  aim_correction: "FPS shooter",
-  racing: "Arcade racing",
-  dialogue: "Open-world RPG",
-  boss_fail: "Action RPG boss arena",
-  default: "Unknown gameplay",
-};
-
-function sha256(b: Buffer) {
-  return crypto.createHash("sha256").update(b).digest("hex");
-}
-
-// Deterministic 0..1 pseudo-value from a hash + salt (no Math.random).
-function det(hash: string, salt: string): number {
-  const h = crypto.createHash("sha256").update(hash + salt).digest();
-  // first 4 bytes → unsigned 32-bit → [0,1)
-  const u = (((h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3]) >>> 0);
-  return u / 0xffffffff;
-}
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 export interface ComputeProvider {
   readonly provenance: Omit<ComputeProvenance, "note">;
   analyze(input: AnalyzeInput): Promise<AnalysisResult>;
-}
-
-// ── Shared scoring: turns labels + content signals into a Proof-of-Play score ──
-function scoreProofOfPlay(
-  hash: string,
-  labels: ClipLabels,
-  input: AnalyzeInput,
-  isDuplicate: boolean,
-  isBlank: boolean = false
-): ProofOfPlay {
-  // A blank/duplicate clip carries no training signal — collapse the score so
-  // the headline number and the breakdown both tell the truth.
-  if (isBlank || isDuplicate) {
-    return {
-      total: isBlank ? 3 : 8,
-      breakdown: {
-        uniqueness: isDuplicate ? 0 : 2,
-        taskRelevance: 0,
-        gameplayQuality: isBlank ? 0 : 5,
-        actionDensity: 0,
-      },
-    };
-  }
-
-  // Uniqueness (0..25): full marks for novel footage.
-  const uniqueness = clamp(18 + det(hash, "uniq") * 7, 0, 25);
-
-  // Task relevance (0..30): does the clip's top action match the bounty label?
-  const wanted = LABEL_ACTIONS[input.requiredLabel] ?? LABEL_ACTIONS.default;
-  const overlap = labels.actions.filter((a) => wanted.includes(a)).length;
-  const taskRelevance = clamp((overlap / Math.max(1, wanted.length)) * 30, 0, 30);
-
-  // Gameplay quality (0..25): proxy from resolution/bitrate ≈ file size, capped.
-  const sizeMB = input.bytes.length / (1024 * 1024);
-  const qualityFromSize = clamp(8 + Math.log2(1 + sizeMB) * 4, 0, 25);
-
-  // Action density (0..20): more distinct human actions = richer training signal.
-  const actionDensity = clamp(labels.actions.length * 3.2, 0, 20);
-
-  const total = Math.round(uniqueness + taskRelevance + qualityFromSize + actionDensity);
-  return {
-    total: clamp(total, 0, 100),
-    breakdown: {
-      uniqueness: Math.round(uniqueness),
-      taskRelevance: Math.round(taskRelevance),
-      gameplayQuality: Math.round(qualityFromSize),
-      actionDensity: Math.round(actionDensity),
-    },
-  };
 }
 
 // ─────────────────────────── Mock (always available) ─────────────────────────
@@ -140,15 +61,11 @@ class MockComputeProvider implements ComputeProvider {
     // Dedup on the canonical 0G Storage root hash (byte-identical clips share it).
     const isDuplicate = input.seenHashes.includes(input.storageRootHash);
 
-    const label = LABEL_ACTIONS[input.requiredLabel] ? input.requiredLabel : "default";
-    const pool = LABEL_ACTIONS[label];
-
-    // Pick a deterministic subset of actions from the bounty's vocabulary.
-    const chosen = pool.filter((_, i) => det(hash, "act" + i) > 0.35);
-    const actions = chosen.length >= 2 ? chosen : pool.slice(0, 3);
+    const label = resolveLabel(input.requiredLabel);
+    const actions = pickActions(hash, input.requiredLabel);
 
     // Blank / tiny footage detection.
-    const isBlank = input.bytes.length < 8 * 1024; // < 8KB ≈ not real gameplay
+    const isBlank = input.bytes.length < BLANK_BYTES_THRESHOLD;
 
     const labels: ClipLabels = {
       game: GAME_BY_LABEL[label],
@@ -162,11 +79,15 @@ class MockComputeProvider implements ComputeProvider {
         : `Clear human ${label.replace("_", " ")} behavior with ${actions.length} distinct actions.`,
     };
 
-    const pop = scoreProofOfPlay(hash, labels, input, isDuplicate, isBlank);
+    const pop = scoreProofOfPlay(
+      { contentHash: hash, sizeBytes: input.bytes.length, requiredLabel: input.requiredLabel, actions },
+      isDuplicate,
+      isBlank
+    );
     labels.quality_score = pop.total;
-    labels.training_value = pop.total >= 80 ? "high" : pop.total >= 55 ? "medium" : "low";
+    labels.training_value = trainingValue(pop.total);
 
-    const approved = !isDuplicate && !isBlank && pop.total >= 55;
+    const approved = !isDuplicate && !isBlank && pop.total >= APPROVAL_THRESHOLD;
 
     return {
       labels,
@@ -228,23 +149,29 @@ class OgComputeProvider implements ComputeProvider {
 
     const hash = sha256(input.bytes);
     const isDuplicate = input.seenHashes.includes(input.storageRootHash);
-    const actions: string[] = Array.isArray(parsed.actions) ? parsed.actions : [];
+    const isBlank = input.bytes.length < BLANK_BYTES_THRESHOLD;
+    const modelActions: string[] = Array.isArray(parsed.actions) ? parsed.actions : [];
+    const actions = modelActions.length ? modelActions : pickActions(hash, input.requiredLabel);
     const labels: ClipLabels = {
-      game: parsed.game ?? GAME_BY_LABEL[input.requiredLabel] ?? "Unknown",
-      actions: actions.length ? actions : (LABEL_ACTIONS[input.requiredLabel] ?? LABEL_ACTIONS.default).slice(0, 3),
+      game: parsed.game ?? GAME_BY_LABEL[resolveLabel(input.requiredLabel)],
+      actions,
       quality_score: 0,
       training_value: "medium",
       reason: parsed.reason ?? "Analyzed via 0G Compute inference.",
     };
-    const pop = scoreProofOfPlay(hash, labels, input, isDuplicate);
+    const pop = scoreProofOfPlay(
+      { contentHash: hash, sizeBytes: input.bytes.length, requiredLabel: input.requiredLabel, actions },
+      isDuplicate,
+      isBlank
+    );
     labels.quality_score = pop.total;
-    labels.training_value = pop.total >= 80 ? "high" : pop.total >= 55 ? "medium" : "low";
+    labels.training_value = trainingValue(pop.total);
 
     return {
       labels,
       proofOfPlay: pop,
       compute: { ...this.provenance, note: `Inference via 0G Compute provider ${providerAddr.slice(0, 10)}…` },
-      approved: !isDuplicate && pop.total >= 55,
+      approved: !isDuplicate && !isBlank && pop.total >= APPROVAL_THRESHOLD,
       duplicate: isDuplicate,
     };
   }
@@ -256,7 +183,7 @@ function buildPrompt(input: AnalyzeInput): string {
     `The bounty requires gameplay demonstrating the behavior labeled "${input.requiredLabel}".`,
     `File: ${input.fileName} (${input.mimeType}, ${(input.bytes.length / 1024).toFixed(0)} KB).`,
     `Return JSON: {"game": string, "actions": string[], "reason": string}.`,
-    `actions must be from this vocabulary: ${(LABEL_ACTIONS[input.requiredLabel] ?? LABEL_ACTIONS.default).join(", ")}.`,
+    `actions must be from this vocabulary: ${LABEL_ACTIONS[resolveLabel(input.requiredLabel)].join(", ")}.`,
   ].join("\n");
 }
 
@@ -281,5 +208,3 @@ export function getComputeProvider(): ComputeProvider {
   _provider = live ? new OgComputeProvider() : new MockComputeProvider();
   return _provider;
 }
-
-export { sha256 };

@@ -10,7 +10,11 @@
     "lint": "next lint",
     "compile": "node scripts/compile-contract.mjs",
     "deploy": "node scripts/deploy-contract.mjs",
-    "seed": "node scripts/seed-bounties.mjs"
+    "seed": "node scripts/seed-bounties.mjs",
+    "test": "vitest run tests/scoring.test.ts",
+    "test:watch": "vitest tests/scoring.test.ts",
+    "test:all": "vitest run",
+    "test:e2e": "node scripts/run-e2e.mjs"
   },
   "dependencies": {
     "@0glabs/0g-ts-sdk": "^0.3.1",
@@ -27,6 +31,7 @@
     "postcss": "^8.4.49",
     "solc": "^0.8.26",
     "tailwindcss": "^3.4.15",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9"
   }
 }

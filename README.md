@@ -150,6 +150,24 @@ Reward budget is **reserved at approval time** so a later claim is always solven
 
 ---
 
+## Tests
+
+```bash
+npm test        # unit tests — Proof-of-Play scoring core (no server needed)
+npm run test:e2e   # boots a dev server, runs unit + live API integration tests
+npm run test:all   # unit + integration against an already-running server
+```
+
+- **`tests/scoring.test.ts`** — the pure scoring core in `src/lib/scoring.ts`:
+  deterministic `det()` bounds + stability, action-vocabulary selection, the
+  Proof-of-Play breakdown (caps, on-label > off-label, size→quality), duplicate
+  and blank-footage collapse, training-value bands, and a regression test for the
+  `>>>` operator-precedence bug. 22 tests.
+- **`tests/api.integration.test.ts`** — drives the live API: a real **0G Storage**
+  upload returns a valid `0x…64hex` merkle root, deterministic re-uploads match,
+  blank/duplicate clips are rejected, and the dataset manifest only contains
+  approved clips with provenance hashes. Skips gracefully if no server is up.
+
 ## Tech stack
 
 Next.js 14 (App Router) · Tailwind · ethers v6 + MetaMask · Solidity (solc) ·
