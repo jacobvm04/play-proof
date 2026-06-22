@@ -1,7 +1,15 @@
 "use client";
 
-// Circular Proof-of-Play score gauge.
-export default function ScoreRing({ score, size = 120 }: { score: number; size?: number }) {
+// Circular AI pre-score gauge.
+export default function ScoreRing({
+  score,
+  size = 120,
+  caption = "AI pre-score",
+}: {
+  score: number;
+  size?: number;
+  caption?: string;
+}) {
   const r = (size - 14) / 2;
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, score)) / 100;
@@ -28,7 +36,7 @@ export default function ScoreRing({ score, size = 120 }: { score: number; size?:
         <span className="text-3xl font-extrabold tracking-tight" style={{ color }}>
           {score}
         </span>
-        <span className="label">Proof-of-Play</span>
+        <span className="label">{caption}</span>
       </div>
     </div>
   );

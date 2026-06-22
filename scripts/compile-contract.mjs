@@ -16,6 +16,9 @@ const input = {
   sources: { "PlayProof.sol": { content: source } },
   settings: {
     optimizer: { enabled: true, runs: 200 },
+    // Pin to shanghai: emits PUSH0 (supported by 0G testnet + ganache shanghai)
+    // but avoids Cancun-only opcodes like MCOPY that older local VMs lack.
+    evmVersion: "shanghai",
     outputSelection: {
       "*": { "*": ["abi", "evm.bytecode.object"] },
     },

@@ -1,7 +1,7 @@
 "use client";
 
-// Browser-side wallet + contract helpers. The player signs their own
-// submitClip / claimReward transactions; the buyer signs createBounty.
+// Browser-side wallet + contract helpers. Contributors sign submitClip /
+// claimReward; reviewers sign submitReview; buyers sign createBounty.
 
 import { ethers } from "ethers";
 import artifact from "@/contracts/PlayProof.json";
@@ -33,12 +33,8 @@ export async function ensureOgNetwork() {
       params: [{ chainId: OG.chainIdHex }],
     });
   } catch (err: any) {
-    // 4902 = chain not added yet.
     if (err?.code === 4902 || /Unrecognized chain/i.test(err?.message ?? "")) {
-      await window.ethereum.request({
-        method: "wallet_addEthereumChain",
-        params: [OG_CHAIN_PARAMS],
-      });
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [OG_CHAIN_PARAMS] });
     } else {
       throw err;
     }
@@ -53,7 +49,7 @@ export async function getSignerContract() {
   return new ethers.Contract(OG.contract, (artifact as any).abi, signer);
 }
 
-/** Player: record a clip's 0G Storage root hash on-chain. Returns submissionId + tx. */
+/** Contributor: record a trace bundle's 0G Storage root hash on-chain. */
 export async function submitClipOnChain(
   bountyId: number,
   storageRootHash: string
@@ -61,7 +57,6 @@ export async function submitClipOnChain(
   const c = await getSignerContract();
   const tx = await c.submitClip(bountyId, storageRootHash);
   const rc = await tx.wait();
-  // Parse ClipSubmitted to recover the submission id.
   let submissionId = -1;
   for (const log of rc.logs) {
     try {
@@ -75,7 +70,15 @@ export async function submitClipOnChain(
   return { submissionId, txHash: rc.hash };
 }
 
-/** Player: claim the reward for an approved submission. */
+/** Reviewer: cast a verdict on someone else's submission (paid the review reward). */
+export async function submitReviewOnChain(submissionId: number, approve: boolean): Promise<string> {
+  const c = await getSignerContract();
+  const tx = await c.submitReview(submissionId, approve);
+  const rc = await tx.wait();
+  return rc.hash;
+}
+
+/** Contributor: claim the reward for an approved submission. */
 export async function claimRewardOnChain(submissionId: number): Promise<string> {
   const c = await getSignerContract();
   const tx = await c.claimReward(submissionId);
@@ -83,17 +86,21 @@ export async function claimRewardOnChain(submissionId: number): Promise<string> 
   return rc.hash;
 }
 
-/** Buyer: create + fund a new dataset bounty. */
+/** Buyer: create + fund a new task-data bounty. */
 export async function createBountyOnChain(
   title: string,
-  requiredLabel: string,
+  taskType: string,
   rewardPerClipEth: string,
-  clipCount: number
+  reviewerRewardEth: string,
+  requiredReviews: number,
+  submissionCount: number
 ): Promise<string> {
   const c = await getSignerContract();
   const reward = ethers.parseEther(rewardPerClipEth);
-  const budget = reward * BigInt(Math.max(1, clipCount));
-  const tx = await c.createBounty(title, requiredLabel, reward, { value: budget });
+  const revReward = ethers.parseEther(reviewerRewardEth);
+  const perSubmission = reward + revReward * BigInt(Math.max(1, requiredReviews));
+  const budget = perSubmission * BigInt(Math.max(1, submissionCount));
+  const tx = await c.createBounty(title, taskType, reward, revReward, requiredReviews, { value: budget });
   const rc = await tx.wait();
   return rc.hash;
 }

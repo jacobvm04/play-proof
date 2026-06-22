@@ -49,9 +49,12 @@ export async function uploadToOgStorage(bytes: Buffer, fileName: string): Promis
     }
     const rootHash: string = tree.rootHash();
 
-    // Without a funded server key we can still return the real root hash
-    // (provenance), but we can't pay to persist bytes on 0G Storage.
-    if (!pk) {
+    // We always return the real merkle root hash (provenance). We only attempt
+    // to PERSIST bytes on 0G Storage when (a) we have a funded key and (b) the
+    // EVM RPC is an actual 0G endpoint — paying the 0G indexer with a local-chain
+    // key would just fail, so on local/dev we stop at the root hash.
+    const isOgRpc = /0g\.ai/i.test(RPC);
+    if (!pk || !isOgRpc) {
       await file.close();
       return { rootHash, uploaded: false, indexer: INDEXER };
     }

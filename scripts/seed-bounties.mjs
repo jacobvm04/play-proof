@@ -1,56 +1,39 @@
-// Seeds the deployed PlayProof contract with the demo dataset bounties so the
-// mission board is populated for a live demo. Uses OG_SERVER_PRIVATE_KEY as the
-// dataset buyer and escrows a small budget per bounty.
+// Seeds the deployed PlayProof contract with demo computer-use task bounties.
+// CHAIN=local (default) or CHAIN=0g. Uses the deployer as the dataset buyer.
 import { ethers } from "ethers";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveChain, artifact, loadEnv } from "./chain-target.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, "..");
-loadEnv(path.join(root, ".env.local"));
-
-const RPC = process.env.NEXT_PUBLIC_OG_RPC || "https://evmrpc-testnet.0g.ai";
-const PK = process.env.OG_SERVER_PRIVATE_KEY;
+loadEnv();
+const chain = resolveChain();
 const ADDR = process.env.NEXT_PUBLIC_PLAYPROOF_CONTRACT;
-
-if (!PK || !ADDR) {
-  console.error("Need OG_SERVER_PRIVATE_KEY and NEXT_PUBLIC_PLAYPROOF_CONTRACT in .env.local.");
+if (!chain.privateKey || !ADDR) {
+  console.error("Need a deployed contract (NEXT_PUBLIC_PLAYPROOF_CONTRACT) and a funded key. Deploy first.");
   process.exit(1);
 }
 
-const artifact = JSON.parse(
-  fs.readFileSync(path.join(root, "src", "contracts", "PlayProof.json"), "utf8")
-);
+const provider = new ethers.JsonRpcProvider(chain.rpc);
+const wallet = new ethers.Wallet(chain.privateKey, provider);
+const contract = new ethers.Contract(ADDR, artifact().abi, wallet);
 
-const provider = new ethers.JsonRpcProvider(RPC);
-const wallet = new ethers.Wallet(PK, provider);
-const contract = new ethers.Contract(ADDR, artifact.abi, wallet);
-
-// title, requiredLabel, rewardPerClip (0G), clips funded
+// title, taskType, rewardPerClip, reviewerReward, requiredReviews, submissions funded
 const BOUNTIES = [
-  ["Collect parkour failure recovery clips", "parkour", "0.005", 20],
-  ["FPS human aim-correction examples", "aim_correction", "0.006", 20],
-  ["Racing-game cornering & overtakes", "racing", "0.004", 20],
-  ["NPC dialogue choice interactions", "dialogue", "0.004", 20],
-  ["Failed boss-fight attempts", "boss_fail", "0.007", 15],
+  ["Fill out a multi-step web form (signup → verify → submit)", "web_form", "0.01", "0.001", 3, 15],
+  ["Navigate & edit a spreadsheet to a target state", "spreadsheet", "0.012", "0.001", 3, 12],
+  ["Research a question across multiple browser tabs", "web_research", "0.012", "0.001", 3, 12],
+  ["Triage an email inbox: label, archive, reply", "email_triage", "0.01", "0.001", 3, 12],
+  ["Game: FPS aim-correction sequences", "game_fps", "0.008", "0.001", 3, 12],
+  ["Game: platformer parkour failure recovery", "game_parkour", "0.008", "0.001", 3, 12],
 ];
 
-for (const [title, label, reward, clips] of BOUNTIES) {
+for (const [title, taskType, reward, revReward, n, count] of BOUNTIES) {
   const rewardWei = ethers.parseEther(reward);
-  const budget = rewardWei * BigInt(clips);
+  const revWei = ethers.parseEther(revReward);
+  const perSubmission = rewardWei + revWei * BigInt(n);
+  const budget = perSubmission * BigInt(count);
   process.stdout.write(`Creating "${title}" … `);
-  const tx = await contract.createBounty(title, label, rewardWei, { value: budget });
+  const tx = await contract.createBounty(title, taskType, rewardWei, revWei, n, { value: budget });
   const rc = await tx.wait();
   console.log(`ok (block ${rc.blockNumber})`);
 }
 
-console.log(`\n✓ Seeded ${BOUNTIES.length} bounties on ${ADDR}`);
-
-function loadEnv(p) {
-  if (!fs.existsSync(p)) return;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-  }
-}
+console.log(`\n✓ Seeded ${BOUNTIES.length} task bounties on ${ADDR} (${chain.which})`);

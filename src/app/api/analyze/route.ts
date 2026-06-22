@@ -5,62 +5,92 @@ import { uploadToOgStorage } from "@/lib/storage";
 import { getComputeProvider } from "@/lib/compute";
 import { seenHashesForBounty } from "@/lib/db";
 import { fetchBounties } from "@/lib/contract";
+import { buildManifest, packBundle } from "@/lib/bundle";
+import type { TraceEvent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Stage 1 of the pipeline: clip bytes in → 0G Storage upload → 0G Compute
-// analysis (labels + Proof-of-Play) out. Does NOT write on-chain or to the
-// index — the client signs submitClip itself, then calls /api/submissions.
+// Pipeline stage 1: trace bundle in → 0G Storage upload → 0G Compute pre-screen.
+// Accepts a screen-recording video + the synced input-event stream, assembles a
+// canonical trace bundle, uploads the WHOLE bundle to 0G Storage, and returns the
+// AI pre-score + labels. Does NOT write on-chain (the client signs submitClip).
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
-    const file = form.get("clip");
+    const video = form.get("video");
     const bountyId = Number(form.get("bountyId"));
+    const eventsRaw = form.get("events");
+    const contributor = (form.get("contributor") as string) || undefined;
+    const screenW = Number(form.get("screenW") || 0);
+    const screenH = Number(form.get("screenH") || 0);
+    const startedAt = Number(form.get("startedAt") || Date.now());
 
-    if (!(file instanceof File)) {
-      return NextResponse.json({ ok: false, error: "No clip file provided." }, { status: 400 });
+    if (!(video instanceof File)) {
+      return NextResponse.json({ ok: false, error: "No screen recording provided." }, { status: 400 });
     }
     if (Number.isNaN(bountyId)) {
       return NextResponse.json({ ok: false, error: "Missing bountyId." }, { status: 400 });
     }
 
+    let events: TraceEvent[] = [];
+    try {
+      events = eventsRaw ? (JSON.parse(eventsRaw as string) as TraceEvent[]) : [];
+    } catch {
+      events = [];
+    }
+
     const bounties = await fetchBounties();
     const bounty = bounties.find((b) => b.id === bountyId);
-    const requiredLabel = bounty?.requiredLabel ?? "default";
-    const bountyTitle = bounty?.title ?? "Gameplay dataset";
+    const taskType = bounty?.taskType ?? "default";
+    const bountyTitle = bounty?.title ?? "Computer-use task";
 
-    const bytes = Buffer.from(await file.arrayBuffer());
+    const videoBytes = Buffer.from(await video.arrayBuffer());
 
-    // ── Save a local preview copy so the UI can play the clip back ──
+    // ── Build the canonical manifest + pack the full trace bundle ──
+    const manifest = buildManifest({
+      taskType,
+      events,
+      videoMime: video.type || "video/webm",
+      videoSize: videoBytes.length,
+      screen: { width: screenW || 1280, height: screenH || 720 },
+      startedAt,
+      contributor,
+    });
+    const bundle = packBundle(manifest, events, videoBytes);
+
+    // ── Save a local video preview so the UI can play it back ──
     const clipsDir = path.join(process.cwd(), "public", "clips");
     fs.mkdirSync(clipsDir, { recursive: true });
-    const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    fs.writeFileSync(path.join(clipsDir, safeName), bytes);
-    const clipUrl = `/clips/${safeName}`;
+    const ext = (video.type.split("/")[1] || "webm").replace(/[^a-z0-9]/gi, "");
+    const safeName = `${Date.now()}-${(contributor || "anon").slice(0, 8)}.${ext}`;
+    fs.writeFileSync(path.join(clipsDir, safeName), videoBytes);
+    const videoUrl = `/clips/${safeName}`;
 
-    // ── 0G Storage: upload bytes, get canonical root hash ──
-    const storage = await uploadToOgStorage(bytes, file.name);
+    // ── 0G Storage: upload the WHOLE bundle, get the canonical root hash ──
+    const storage = await uploadToOgStorage(bundle, `${safeName}.pptb`);
 
-    // ── 0G Compute: AI quality + labeling ──
+    // ── 0G Compute: AI pre-screen + labeling ──
     const provider = getComputeProvider();
     const analysis = await provider.analyze({
-      bytes,
-      fileName: file.name,
-      mimeType: file.type || "application/octet-stream",
-      requiredLabel,
+      bytes: bundle,
+      fileName: `${safeName}.pptb`,
+      mimeType: "application/x-playproof-bundle",
+      taskType,
       bountyTitle,
       storageRootHash: storage.rootHash,
       seenHashes: seenHashesForBounty(bountyId),
+      manifest,
     });
 
     return NextResponse.json({
       ok: true,
       storage,
       analysis,
-      clipUrl,
-      fileName: file.name,
-      sizeBytes: bytes.length,
+      manifest,
+      videoUrl,
+      fileName: `${safeName}.pptb`,
+      sizeBytes: bundle.length,
     });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message ?? String(err) }, { status: 500 });

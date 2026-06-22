@@ -5,10 +5,10 @@ import { OG } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
-// Builds a downloadable dataset manifest for a bounty: every approved clip's 0G
-// Storage root hash, contributor, labels, and Proof-of-Play score. This is the
-// artifact an AI team actually consumes — transparent provenance, decentralized
-// access, tamper-resistant contributor records.
+// Downloadable dataset manifest for a bounty: every human-approved trace bundle's
+// 0G Storage root hash, contributor, task labels, AI pre-score, and review tally.
+// This is the artifact an AI team consumes — transparent provenance, tamper-
+// resistant contributor records, decentralized access, and human-verified labels.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const bountyId = Number(searchParams.get("bountyId"));
@@ -16,44 +16,52 @@ export async function GET(req: NextRequest) {
 
   const bounties = await fetchBounties();
   const bounty = bounties.find((b) => b.id === bountyId);
-  const subs = allSubmissions().filter(
-    (s) => s.bountyId === bountyId && s.status === "approved"
-  );
+  const subs = allSubmissions().filter((s) => s.bountyId === bountyId && s.status === "approved");
 
   const labelCounts: Record<string, number> = {};
   let totalScore = 0;
+  let totalMs = 0;
+  let totalEvents = 0;
   for (const s of subs) {
     for (const a of s.analysis.labels.actions) labelCounts[a] = (labelCounts[a] ?? 0) + 1;
     totalScore += s.analysis.proofOfPlay.total;
+    totalMs += s.manifest?.durationMs ?? 0;
+    totalEvents += s.manifest?.events.count ?? 0;
   }
-  const contributors = Array.from(new Set(subs.map((s) => s.player)));
+  const contributors = Array.from(new Set(subs.map((s) => s.contributor)));
 
   const manifest = {
     dataset: {
       name: datasetName(bounty?.title ?? `Bounty ${bountyId}`),
       version: "0.1",
       bountyId,
-      requiredLabel: bounty?.requiredLabel ?? null,
+      taskType: bounty?.taskType ?? null,
       network: OG.networkName,
       storageIndexer: OG.storageExplorer,
       contract: OG.contract || null,
+      verification: "human-review-consensus (>50% of N reviewers) + 0G Compute pre-screen",
     },
     stats: {
-      clips: subs.length,
+      bundles: subs.length,
       contributors: contributors.length,
-      avgProofOfPlay: subs.length ? Math.round(totalScore / subs.length) : 0,
+      totalMinutes: +(totalMs / 60000).toFixed(1),
+      totalInputEvents: totalEvents,
+      avgAiPreScore: subs.length ? Math.round(totalScore / subs.length) : 0,
       labelDistribution: labelCounts,
     },
-    clips: subs.map((s) => ({
+    bundles: subs.map((s) => ({
       submissionId: s.id,
-      contributor: s.player,
+      contributor: s.contributor,
       storageRootHash: s.storageRootHash,
       storageTxHash: s.storageTxHash ?? null,
-      labels: s.analysis.labels.actions,
-      game: s.analysis.labels.game,
-      proofOfPlay: s.analysis.proofOfPlay.total,
+      actions: s.analysis.labels.actions,
+      taskType: s.analysis.labels.taskType,
+      aiPreScore: s.analysis.proofOfPlay.total,
+      humanReview: s.review,
       trainingValue: s.analysis.labels.training_value,
-      approveTxHash: s.approveTxHash ?? null,
+      durationMs: s.manifest?.durationMs ?? null,
+      inputEvents: s.manifest?.events ?? null,
+      finalizeTxHash: s.finalizeTxHash ?? null,
     })),
   };
 

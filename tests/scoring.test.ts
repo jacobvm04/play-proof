@@ -1,199 +1,180 @@
 import { describe, it, expect } from "vitest";
 import {
-  APPROVAL_THRESHOLD,
-  BLANK_BYTES_THRESHOLD,
-  GAME_BY_LABEL,
-  LABEL_ACTIONS,
+  PRESCREEN_THRESHOLD,
+  MIN_TRACE_EVENTS,
+  TASK_ACTIONS,
+  TASK_LABELS,
   clamp,
   det,
   pickActions,
-  resolveLabel,
+  resolveTask,
   scoreProofOfPlay,
   sha256,
   trainingValue,
+  signalsFromManifest,
   type ScoreInput,
 } from "@/lib/scoring";
+import type { TraceManifest } from "@/lib/types";
 
-// A realistic 0.5 MB "clip" of deterministic bytes.
-function clipOf(seed: number, size = 512 * 1024): Buffer {
+function bytesOf(seed: number, size = 512 * 1024): Buffer {
   const b = Buffer.alloc(size);
   for (let i = 0; i < size; i++) b[i] = (i * 31 + seed * 17) & 0xff;
   return b;
 }
 
-// A strong clip: novel footage, several on-label actions, a decent file size —
-// representative of what actually clears the approval bar in the demo.
-const baseInput = (over: Partial<ScoreInput> = {}): ScoreInput => ({
-  contentHash: sha256(clipOf(1)),
+// A strong trace bundle: novel, on-task actions, rich synced input, has video.
+const strong = (over: Partial<ScoreInput> = {}): ScoreInput => ({
+  contentHash: sha256(bytesOf(1)),
   sizeBytes: 512 * 1024,
-  requiredLabel: "parkour",
-  actions: ["jump", "sprint", "fall", "recovery"],
+  taskType: "web_form",
+  actions: ["focus_field", "type", "tab_next", "click_submit"],
+  eventCount: 120,
+  keystrokes: 80,
+  pointerMoves: 60,
+  clicks: 8,
+  hasVideo: true,
   ...over,
 });
 
 describe("det() — deterministic pseudo-random", () => {
-  it("is bounded in [0, 1)", () => {
+  it("is bounded in [0,1) and stable", () => {
     for (let i = 0; i < 200; i++) {
-      const v = det(sha256(clipOf(i)), "salt" + i);
+      const v = det(sha256(bytesOf(i)), "s" + i);
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThan(1);
     }
-  });
-
-  it("is stable for the same (hash, salt)", () => {
-    const h = sha256(clipOf(42));
+    const h = sha256(bytesOf(42));
     expect(det(h, "uniq")).toBe(det(h, "uniq"));
   });
-
-  it("varies across salts and across hashes (not a constant)", () => {
-    const h = sha256(clipOf(7));
-    const a = det(h, "uniq");
-    const b = det(h, "act0");
-    const c = det(sha256(clipOf(8)), "uniq");
-    expect(a).not.toBe(b);
-    expect(a).not.toBe(c);
-  });
-
   it("spreads across the range (regression for the >>> precedence bug)", () => {
-    // The old `x >>> 0 / 0xffffffff` returned huge ints; values must now be <1.
-    const samples = Array.from({ length: 500 }, (_, i) => det(sha256(clipOf(i)), "s"));
-    expect(Math.max(...samples)).toBeLessThan(1);
-    // Mean of a uniform [0,1) should land roughly mid-range.
-    const mean = samples.reduce((s, v) => s + v, 0) / samples.length;
+    const s = Array.from({ length: 500 }, (_, i) => det(sha256(bytesOf(i)), "s"));
+    expect(Math.max(...s)).toBeLessThan(1);
+    const mean = s.reduce((a, v) => a + v, 0) / s.length;
     expect(mean).toBeGreaterThan(0.35);
     expect(mean).toBeLessThan(0.65);
   });
 });
 
-describe("clamp()", () => {
-  it("bounds correctly", () => {
+describe("clamp / resolveTask / pickActions", () => {
+  it("clamps", () => {
     expect(clamp(5, 0, 10)).toBe(5);
     expect(clamp(-3, 0, 10)).toBe(0);
     expect(clamp(99, 0, 10)).toBe(10);
   });
-});
-
-describe("resolveLabel()", () => {
-  it("keeps known labels", () => {
-    expect(resolveLabel("parkour")).toBe("parkour");
-    expect(resolveLabel("aim_correction")).toBe("aim_correction");
+  it("resolves known + unknown task types", () => {
+    expect(resolveTask("spreadsheet")).toBe("spreadsheet");
+    expect(resolveTask("nonsense")).toBe("default");
   });
-  it("falls back to default for unknown labels", () => {
-    expect(resolveLabel("nonsense")).toBe("default");
-    expect(resolveLabel("")).toBe("default");
-  });
-});
-
-describe("pickActions()", () => {
-  it("returns only vocabulary actions for the label", () => {
-    const hash = sha256(clipOf(3));
-    const actions = pickActions(hash, "racing");
-    for (const a of actions) expect(LABEL_ACTIONS.racing).toContain(a);
-  });
-  it("returns at least 2 actions", () => {
-    for (let i = 0; i < 50; i++) {
-      expect(pickActions(sha256(clipOf(i)), "boss_fail").length).toBeGreaterThanOrEqual(2);
-    }
-  });
-  it("is deterministic for the same clip", () => {
-    const h = sha256(clipOf(9));
-    expect(pickActions(h, "parkour")).toEqual(pickActions(h, "parkour"));
-  });
-  it("varies across different clips (regression: not always the full pool)", () => {
+  it("picks only on-task actions, >=2, deterministic, varied across bundles", () => {
+    const h = sha256(bytesOf(3));
+    for (const a of pickActions(h, "web_research")) expect(TASK_ACTIONS.web_research).toContain(a);
+    expect(pickActions(h, "web_form").length).toBeGreaterThanOrEqual(2);
+    expect(pickActions(h, "web_form")).toEqual(pickActions(h, "web_form"));
     const seen = new Set<string>();
-    for (let i = 0; i < 40; i++) seen.add(pickActions(sha256(clipOf(i)), "parkour").join(","));
+    for (let i = 0; i < 40; i++) seen.add(pickActions(sha256(bytesOf(i)), "web_form").join(","));
     expect(seen.size).toBeGreaterThan(1);
   });
 });
 
-describe("scoreProofOfPlay() — happy path", () => {
-  it("scores a good, relevant clip above the approval bar", () => {
-    const pop = scoreProofOfPlay(baseInput(), false, false);
-    expect(pop.total).toBeGreaterThanOrEqual(APPROVAL_THRESHOLD);
-    expect(pop.total).toBeLessThanOrEqual(100);
+describe("scoreProofOfPlay — trace bundle scoring", () => {
+  it("scores a strong bundle above the pre-screen bar", () => {
+    const p = scoreProofOfPlay(strong(), false, false);
+    expect(p.total).toBeGreaterThanOrEqual(PRESCREEN_THRESHOLD);
+    expect(p.total).toBeLessThanOrEqual(100);
   });
 
   it("keeps every breakdown component within its max", () => {
-    const pop = scoreProofOfPlay(baseInput(), false, false);
-    expect(pop.breakdown.uniqueness).toBeLessThanOrEqual(25);
-    expect(pop.breakdown.taskRelevance).toBeLessThanOrEqual(30);
-    expect(pop.breakdown.gameplayQuality).toBeLessThanOrEqual(25);
-    expect(pop.breakdown.actionDensity).toBeLessThanOrEqual(20);
-    Object.values(pop.breakdown).forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
+    const p = scoreProofOfPlay(strong(), false, false);
+    expect(p.breakdown.uniqueness).toBeLessThanOrEqual(25);
+    expect(p.breakdown.taskRelevance).toBeLessThanOrEqual(30);
+    expect(p.breakdown.inputRichness).toBeLessThanOrEqual(25);
+    expect(p.breakdown.completeness).toBeLessThanOrEqual(20);
+    Object.values(p.breakdown).forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
   });
 
-  it("rewards on-label actions over off-label ones", () => {
-    const onLabel = scoreProofOfPlay(baseInput({ actions: ["jump", "fall", "recovery", "retry"] }), false, false);
-    const offLabel = scoreProofOfPlay(
-      baseInput({ actions: ["accelerate", "brake", "drift", "overtake"] }),
+  it("rewards rich input traces over sparse ones (the key signal)", () => {
+    const rich = scoreProofOfPlay(strong({ keystrokes: 200, clicks: 20 }), false, false);
+    const sparse = scoreProofOfPlay(strong({ keystrokes: 2, clicks: 1, pointerMoves: 2 }), false, false);
+    expect(rich.breakdown.inputRichness).toBeGreaterThan(sparse.breakdown.inputRichness);
+  });
+
+  it("penalizes video-only bundles (no synced input trace) on completeness", () => {
+    const full = scoreProofOfPlay(strong(), false, false);
+    const videoOnly = scoreProofOfPlay(
+      strong({ eventCount: 0, keystrokes: 0, pointerMoves: 0, clicks: 0 }),
       false,
       false
     );
-    expect(onLabel.breakdown.taskRelevance).toBeGreaterThan(offLabel.breakdown.taskRelevance);
+    // completeness: full gets video(8)+trace(12)=20; video-only gets just video(8)
+    expect(full.breakdown.completeness).toBeGreaterThan(videoOnly.breakdown.completeness);
+    expect(videoOnly.breakdown.completeness).toBeLessThanOrEqual(8);
   });
 
-  it("gives bigger files more gameplay-quality credit", () => {
-    const small = scoreProofOfPlay(baseInput({ sizeBytes: 50 * 1024 }), false, false);
-    const big = scoreProofOfPlay(baseInput({ sizeBytes: 20 * 1024 * 1024 }), false, false);
-    expect(big.breakdown.gameplayQuality).toBeGreaterThan(small.breakdown.gameplayQuality);
+  it("rewards on-task actions over off-task ones", () => {
+    const on = scoreProofOfPlay(strong({ actions: ["focus_field", "type", "tab_next", "click_submit"] }), false, false);
+    const off = scoreProofOfPlay(strong({ actions: ["aim", "flick", "fire"] }), false, false);
+    expect(on.breakdown.taskRelevance).toBeGreaterThan(off.breakdown.taskRelevance);
   });
 
-  it("is deterministic for identical input", () => {
-    const a = scoreProofOfPlay(baseInput(), false, false);
-    const b = scoreProofOfPlay(baseInput(), false, false);
-    expect(a).toEqual(b);
+  it("collapses duplicate and blank bundles", () => {
+    const dup = scoreProofOfPlay(strong(), true, false);
+    expect(dup.total).toBeLessThan(PRESCREEN_THRESHOLD);
+    expect(dup.breakdown.uniqueness).toBe(0);
+    const blank = scoreProofOfPlay(strong({ sizeBytes: 1024 }), false, true);
+    expect(blank.total).toBeLessThan(PRESCREEN_THRESHOLD);
+    expect(blank.breakdown.completeness).toBe(0);
   });
 
-  it("produces varied scores across different clips", () => {
+  it("is deterministic and varied across bundles", () => {
+    expect(scoreProofOfPlay(strong(), false, false)).toEqual(scoreProofOfPlay(strong(), false, false));
     const scores = new Set<number>();
     for (let i = 0; i < 30; i++) {
-      scores.add(
-        scoreProofOfPlay(
-          baseInput({ contentHash: sha256(clipOf(i)), actions: pickActions(sha256(clipOf(i)), "parkour") }),
-          false,
-          false
-        ).total
-      );
+      const h = sha256(bytesOf(i));
+      scores.add(scoreProofOfPlay(strong({ contentHash: h, actions: pickActions(h, "web_form") }), false, false).total);
     }
     expect(scores.size).toBeGreaterThan(3);
   });
 });
 
-describe("scoreProofOfPlay() — rejection paths", () => {
-  it("collapses score for duplicates", () => {
-    const pop = scoreProofOfPlay(baseInput(), true, false);
-    expect(pop.total).toBeLessThan(APPROVAL_THRESHOLD);
-    expect(pop.breakdown.uniqueness).toBe(0);
+describe("signalsFromManifest", () => {
+  it("returns video-only defaults when no manifest", () => {
+    const s = signalsFromManifest(undefined);
+    expect(s.eventCount).toBe(0);
+    expect(s.hasVideo).toBe(true);
   });
-
-  it("collapses score for blank footage", () => {
-    const pop = scoreProofOfPlay(baseInput({ sizeBytes: 1024 }), false, true);
-    expect(pop.total).toBeLessThan(APPROVAL_THRESHOLD);
-    expect(pop.breakdown.gameplayQuality).toBe(0);
-    expect(pop.breakdown.actionDensity).toBe(0);
+  it("extracts signals from a manifest", () => {
+    const m: TraceManifest = {
+      version: "playproof-trace/1",
+      taskType: "web_form",
+      durationMs: 12000,
+      startedAt: 0,
+      screen: { width: 1280, height: 720 },
+      video: { mimeType: "video/webm", sizeBytes: 500000 },
+      events: { count: 50, byType: {}, keystrokes: 30, pointerMoves: 15, clicks: 5 },
+    };
+    const s = signalsFromManifest(m);
+    expect(s.eventCount).toBe(50);
+    expect(s.keystrokes).toBe(30);
+    expect(s.clicks).toBe(5);
+    expect(s.hasVideo).toBe(true);
   });
 });
 
-describe("trainingValue()", () => {
-  it("maps score bands correctly", () => {
+describe("trainingValue + thresholds + vocab integrity", () => {
+  it("maps score bands", () => {
     expect(trainingValue(95)).toBe("high");
-    expect(trainingValue(80)).toBe("high");
     expect(trainingValue(60)).toBe("medium");
-    expect(trainingValue(APPROVAL_THRESHOLD)).toBe("medium");
     expect(trainingValue(40)).toBe("low");
   });
-});
-
-describe("vocabulary integrity", () => {
-  it("every label has a game name and a non-empty action pool", () => {
-    for (const key of Object.keys(LABEL_ACTIONS)) {
-      expect(GAME_BY_LABEL[key], `game for ${key}`).toBeTruthy();
-      expect(LABEL_ACTIONS[key].length).toBeGreaterThan(0);
+  it("every task type has a label and a non-empty action pool", () => {
+    for (const k of Object.keys(TASK_ACTIONS)) {
+      expect(TASK_LABELS[k], `label for ${k}`).toBeTruthy();
+      expect(TASK_ACTIONS[k].length).toBeGreaterThan(0);
     }
   });
-  it("exposes sane thresholds", () => {
-    expect(BLANK_BYTES_THRESHOLD).toBeGreaterThan(0);
-    expect(APPROVAL_THRESHOLD).toBeGreaterThan(0);
-    expect(APPROVAL_THRESHOLD).toBeLessThanOrEqual(100);
+  it("MIN_TRACE_EVENTS and PRESCREEN_THRESHOLD are sane", () => {
+    expect(MIN_TRACE_EVENTS).toBeGreaterThan(0);
+    expect(PRESCREEN_THRESHOLD).toBeGreaterThan(0);
+    expect(PRESCREEN_THRESHOLD).toBeLessThanOrEqual(100);
   });
 });

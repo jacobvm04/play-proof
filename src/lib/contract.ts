@@ -1,6 +1,6 @@
 // Server-side contract helpers: read bounties/submissions and act as the oracle
-// (approve/reject) using OG_SERVER_PRIVATE_KEY. The client signs its own
-// submitClip/claimReward txs in the browser — see src/lib/client-contract.ts.
+// (post AI pre-scores, finalize once reviews are in) using OG_SERVER_PRIVATE_KEY.
+// Clients sign their own submitClip / submitReview / claimReward in the browser.
 
 import "server-only";
 import { ethers } from "ethers";
@@ -25,20 +25,25 @@ export function readContract() {
 export function oracleContract() {
   const pk = process.env.OG_SERVER_PRIVATE_KEY;
   if (!pk) throw new Error("OG_SERVER_PRIVATE_KEY not set — cannot act as oracle.");
-  const signer = new ethers.Wallet(pk, readProvider());
+  const provider = readProvider();
+  const signer = new ethers.Wallet(pk, provider);
+  // Instamine local chains: keep receipt polling tight.
+  provider.pollingInterval = 200;
   return new ethers.Contract(OG.contract, (artifact as any).abi, signer);
 }
 
-export async function approveOnChain(submissionId: number, qualityScore: number): Promise<string> {
+/** Oracle: record the 0G Compute AI pre-score for a submission. */
+export async function setAiPreScoreOnChain(submissionId: number, score: number): Promise<string> {
   const c = oracleContract();
-  const tx = await c.approveSubmission(submissionId, qualityScore);
+  const tx = await c.setAiPreScore(submissionId, Math.max(0, Math.min(100, Math.round(score))));
   const rc = await tx.wait();
   return rc.hash;
 }
 
-export async function rejectOnChain(submissionId: number): Promise<string> {
+/** Anyone (here, the server) finalizes once N reviews are in. */
+export async function finalizeOnChain(submissionId: number): Promise<string> {
   const c = oracleContract();
-  const tx = await c.rejectSubmission(submissionId);
+  const tx = await c.finalize(submissionId);
   const rc = await tx.wait();
   return rc.hash;
 }
@@ -54,13 +59,31 @@ export async function fetchBounties(): Promise<Bounty[]> {
       id: Number(b.id),
       creator: b.creator,
       title: b.title,
-      requiredLabel: b.requiredLabel,
+      taskType: b.taskType,
       rewardPerClipWei: b.rewardPerClip.toString(),
       rewardPerClip: ethers.formatEther(b.rewardPerClip),
+      reviewerRewardWei: b.reviewerReward.toString(),
+      reviewerReward: ethers.formatEther(b.reviewerReward),
+      requiredReviews: Number(b.requiredReviews),
       remainingBudget: ethers.formatEther(b.remainingBudget),
       approvedCount: Number(b.approvedCount),
       active: b.active,
     });
   }
   return out;
+}
+
+/** Read on-chain review state for a submission (positive/total/required). */
+export async function fetchReviewState(submissionId: number) {
+  const c = readContract();
+  const s = await c.getSubmission(submissionId);
+  const b = await c.getBounty(Number(s.bountyId));
+  return {
+    positiveReviews: Number(s.positiveReviews),
+    totalReviews: Number(s.totalReviews),
+    requiredReviews: Number(b.requiredReviews),
+    status: Number(s.status), // 0 pending, 1 approved, 2 rejected
+    contributor: s.contributor as string,
+    aiPreScore: Number(s.aiPreScore),
+  };
 }

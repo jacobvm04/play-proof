@@ -6,6 +6,8 @@ out
 *.log
 .DS_Store
 data/db.json
+data/local-accounts.json
+.env.e2e.local
 public/clips/*
 !public/clips/.gitkeep
 src/contracts/PlayProof.json

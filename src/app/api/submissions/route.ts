@@ -4,7 +4,7 @@ import type { SubmissionRecord } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-// GET: list all indexed submissions (for leaderboard / dataset / buyer views).
+// GET: list all indexed submissions (review queue / leaderboard / datasets / buyer).
 export async function GET() {
   return NextResponse.json({ ok: true, submissions: allSubmissions() });
 }
@@ -13,7 +13,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as Partial<SubmissionRecord>;
-    if (!body.storageRootHash || body.bountyId === undefined || !body.player) {
+    if (!body.storageRootHash || body.bountyId === undefined || !body.contributor) {
       return NextResponse.json({ ok: false, error: "Missing required fields." }, { status: 400 });
     }
     if (!body.analysis) {
@@ -23,16 +23,23 @@ export async function POST(req: NextRequest) {
     const rec: SubmissionRecord = {
       id: body.id ?? -1,
       bountyId: body.bountyId,
-      player: body.player,
+      contributor: body.contributor,
       storageRootHash: body.storageRootHash,
       storageTxHash: body.storageTxHash,
-      clipUrl: body.clipUrl,
-      fileName: body.fileName ?? "clip.mp4",
+      videoUrl: body.videoUrl,
+      manifest: body.manifest,
+      fileName: body.fileName ?? "bundle.pptb",
       sizeBytes: body.sizeBytes ?? 0,
-      durationSec: body.durationSec,
+      durationMs: body.manifest?.durationMs,
       analysis: body.analysis,
       status: "pending",
+      review: {
+        positiveReviews: body.review?.positiveReviews ?? 0,
+        totalReviews: body.review?.totalReviews ?? 0,
+        requiredReviews: body.review?.requiredReviews ?? 3,
+      },
       submitTxHash: body.submitTxHash,
+      aiScoreTxHash: body.aiScoreTxHash,
       paid: false,
       createdAt: Date.now(),
     };
