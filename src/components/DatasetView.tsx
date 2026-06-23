@@ -35,20 +35,16 @@ export default function DatasetView({
 function DatasetCard({ bounty, submissions }: { bounty: Bounty; submissions: SubmissionRecord[] }) {
   const stats = useMemo(() => {
     const labels: Record<string, number> = {};
-    let score = 0, ms = 0, events = 0;
+    let ms = 0;
     for (const s of submissions) {
       for (const a of s.analysis.labels.actions) labels[a] = (labels[a] ?? 0) + 1;
-      score += s.analysis.proofOfPlay.total;
       ms += s.manifest?.durationMs ?? 0;
-      events += s.manifest?.events.count ?? 0;
     }
     const contributors = new Set(submissions.map((s) => s.contributor)).size;
     return {
       labels,
       contributors,
       minutes: (ms / 60000).toFixed(1),
-      events,
-      avg: submissions.length ? Math.round(score / submissions.length) : 0,
     };
   }, [submissions]);
 
@@ -56,38 +52,32 @@ function DatasetCard({ bounty, submissions }: { bounty: Bounty; submissions: Sub
 
   return (
     <div className="card relative overflow-hidden">
-      <div className="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-brand/20 blur-3xl" />
-      <div className="mb-1 flex items-center justify-between">
-        <span className="chip border-brand/40 text-brand2">Dataset Card</span>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="stamp text-phosphor/80">▍ dataset</span>
         <span className="chip">{bounty.taskType}</span>
       </div>
-      <h3 className="text-lg font-bold">{name}</h3>
+      <h3 className="text-lg font-bold text-bone">{name}</h3>
       <div className="mt-1 text-xs text-muted">
-        human-verified · {bounty.requiredReviews}× review consensus · bounty #{bounty.id}
+        human-verified · trusted reviewer · bounty #{bounty.id}
       </div>
 
-      <div className="mt-4 grid grid-cols-4 gap-2 text-center">
-        <Stat n={submissions.length} l="bundles" />
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        <Stat n={submissions.length} l="recordings" accent />
         <Stat n={stats.contributors} l="contributors" />
         <Stat n={stats.minutes} l="minutes" />
-        <Stat n={stats.avg} l="avg AI" accent />
-      </div>
-
-      <div className="mt-3 text-center text-xs text-muted">
-        {stats.events.toLocaleString()} synced input events captured
       </div>
 
       <div className="mt-4">
         <div className="label mb-1">Action distribution</div>
         {Object.keys(stats.labels).length === 0 ? (
-          <p className="text-xs text-muted">No approved bundles yet.</p>
+          <p className="text-xs text-muted">No approved recordings yet.</p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(stats.labels)
               .sort((a, b) => b[1] - a[1])
               .map(([k, v]) => (
                 <span key={k} className="chip">
-                  {k} <b className="ml-1 text-white">{v}</b>
+                  {k} <b className="ml-1 text-bone">{v}</b>
                 </span>
               ))}
           </div>
@@ -107,7 +97,7 @@ function DatasetCard({ bounty, submissions }: { bounty: Bounty; submissions: Sub
 
 function Stat({ n, l, accent }: { n: number | string; l: string; accent?: boolean }) {
   return (
-    <div className="rounded-lg border border-edge bg-panel2/40 py-2">
+    <div className="rounded-deck border border-edge bg-panel2/40 py-2">
       <div className={`text-xl font-bold ${accent ? "text-good" : ""}`}>{n}</div>
       <div className="label">{l}</div>
     </div>
@@ -128,12 +118,11 @@ function CreateBounty({ address, onCreated }: { address: string; onCreated: () =
   const [taskType, setTaskType] = useState("web_form");
   const [reward, setReward] = useState("0.01");
   const [revReward, setRevReward] = useState("0.001");
-  const [reviews, setReviews] = useState(3);
   const [count, setCount] = useState(12);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
-  const perSub = (Number(reward) + Number(revReward) * reviews) || 0;
+  const perSub = (Number(reward) + Number(revReward)) || 0;
 
   async function submit() {
     setMsg("");
@@ -141,7 +130,7 @@ function CreateBounty({ address, onCreated }: { address: string; onCreated: () =
     if (!title || !taskType) return setMsg("Title and task type are required.");
     setBusy(true);
     try {
-      await createBountyOnChain(title, taskType, reward, revReward, reviews, count);
+      await createBountyOnChain(title, taskType, reward, revReward, count);
       setMsg("✓ Bounty created and funded on 0G Chain.");
       setTitle("");
       onCreated();
@@ -160,8 +149,8 @@ function CreateBounty({ address, onCreated }: { address: string; onCreated: () =
           <div className="label">Dataset Buyer (AI team)</div>
           <h3 className="text-lg font-bold">Post a computer-use data bounty</h3>
           <p className="text-sm text-muted">
-            Escrow {OG.currency} per approved bundle plus per-review rewards. You get verified,
-            provenance-tracked, human-reviewed training traces.
+            Escrow {OG.currency} per approved recording plus per-review rewards. You get verified,
+            provenance-tracked, human-reviewed task recordings.
           </p>
         </div>
         <button className="btn-ghost" onClick={() => setOpen((o) => !o)}>{open ? "Close" : "+ New bounty"}</button>
@@ -187,21 +176,18 @@ function CreateBounty({ address, onCreated }: { address: string; onCreated: () =
           <Field label="Title">
             <input className="inp" placeholder="Fill out a multi-step web form" value={title} onChange={(e) => setTitle(e.target.value)} />
           </Field>
-          <Field label={`Reward per approved bundle (${OG.currency})`}>
+          <Field label={`Reward per approved recording (${OG.currency})`}>
             <input className="inp" type="number" step="0.001" value={reward} onChange={(e) => setReward(e.target.value)} />
           </Field>
           <Field label={`Reward per review (${OG.currency})`}>
             <input className="inp" type="number" step="0.001" value={revReward} onChange={(e) => setRevReward(e.target.value)} />
-          </Field>
-          <Field label="Reviewers per submission (N)">
-            <input className="inp" type="number" min={1} max={9} value={reviews} onChange={(e) => setReviews(Number(e.target.value))} />
           </Field>
           <Field label="Submissions to fund">
             <input className="inp" type="number" value={count} onChange={(e) => setCount(Number(e.target.value))} />
           </Field>
           <div className="sm:col-span-2 flex items-center justify-between">
             <span className="text-xs text-muted">
-              Escrow total: <b className="text-white">{(perSub * count).toFixed(4)} {OG.currency}</b>{" "}
+              Escrow total: <b className="text-bone">{(perSub * count).toFixed(4)} {OG.currency}</b>{" "}
               <span className="opacity-60">({perSub.toFixed(4)}/submission × {count})</span>
             </span>
             <button className="btn-primary" disabled={busy} onClick={submit}>{busy ? "Confirm in wallet…" : "Create & fund"}</button>

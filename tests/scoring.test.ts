@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   PRESCREEN_THRESHOLD,
-  MIN_TRACE_EVENTS,
+  MIN_DURATION_MS,
   TASK_ACTIONS,
   TASK_LABELS,
   clamp,
@@ -22,17 +22,13 @@ function bytesOf(seed: number, size = 512 * 1024): Buffer {
   return b;
 }
 
-// A strong trace bundle: novel, on-task actions, rich synced input, has video.
+// A strong recording: novel, on-task actions, decent file size + duration.
 const strong = (over: Partial<ScoreInput> = {}): ScoreInput => ({
   contentHash: sha256(bytesOf(1)),
-  sizeBytes: 512 * 1024,
+  sizeBytes: 2 * 1024 * 1024,
   taskType: "web_form",
   actions: ["focus_field", "type", "tab_next", "click_submit"],
-  eventCount: 120,
-  keystrokes: 80,
-  pointerMoves: 60,
-  clicks: 8,
-  hasVideo: true,
+  durationMs: 30000,
   ...over,
 });
 
@@ -65,7 +61,7 @@ describe("clamp / resolveTask / pickActions", () => {
     expect(resolveTask("spreadsheet")).toBe("spreadsheet");
     expect(resolveTask("nonsense")).toBe("default");
   });
-  it("picks only on-task actions, >=2, deterministic, varied across bundles", () => {
+  it("picks only on-task actions, >=2, deterministic, varied across recordings", () => {
     const h = sha256(bytesOf(3));
     for (const a of pickActions(h, "web_research")) expect(TASK_ACTIONS.web_research).toContain(a);
     expect(pickActions(h, "web_form").length).toBeGreaterThanOrEqual(2);
@@ -76,8 +72,8 @@ describe("clamp / resolveTask / pickActions", () => {
   });
 });
 
-describe("scoreProofOfPlay — trace bundle scoring", () => {
-  it("scores a strong bundle above the pre-screen bar", () => {
+describe("scoreProofOfPlay — recording scoring", () => {
+  it("scores a strong recording above the pre-screen bar", () => {
     const p = scoreProofOfPlay(strong(), false, false);
     expect(p.total).toBeGreaterThanOrEqual(PRESCREEN_THRESHOLD);
     expect(p.total).toBeLessThanOrEqual(100);
@@ -87,27 +83,21 @@ describe("scoreProofOfPlay — trace bundle scoring", () => {
     const p = scoreProofOfPlay(strong(), false, false);
     expect(p.breakdown.uniqueness).toBeLessThanOrEqual(25);
     expect(p.breakdown.taskRelevance).toBeLessThanOrEqual(30);
-    expect(p.breakdown.inputRichness).toBeLessThanOrEqual(25);
-    expect(p.breakdown.completeness).toBeLessThanOrEqual(20);
+    expect(p.breakdown.visualQuality).toBeLessThanOrEqual(25);
+    expect(p.breakdown.duration).toBeLessThanOrEqual(20);
     Object.values(p.breakdown).forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
   });
 
-  it("rewards rich input traces over sparse ones (the key signal)", () => {
-    const rich = scoreProofOfPlay(strong({ keystrokes: 200, clicks: 20 }), false, false);
-    const sparse = scoreProofOfPlay(strong({ keystrokes: 2, clicks: 1, pointerMoves: 2 }), false, false);
-    expect(rich.breakdown.inputRichness).toBeGreaterThan(sparse.breakdown.inputRichness);
+  it("rewards bigger (higher-quality) files on visual quality", () => {
+    const small = scoreProofOfPlay(strong({ sizeBytes: 50 * 1024 }), false, false);
+    const big = scoreProofOfPlay(strong({ sizeBytes: 20 * 1024 * 1024 }), false, false);
+    expect(big.breakdown.visualQuality).toBeGreaterThan(small.breakdown.visualQuality);
   });
 
-  it("penalizes video-only bundles (no synced input trace) on completeness", () => {
-    const full = scoreProofOfPlay(strong(), false, false);
-    const videoOnly = scoreProofOfPlay(
-      strong({ eventCount: 0, keystrokes: 0, pointerMoves: 0, clicks: 0 }),
-      false,
-      false
-    );
-    // completeness: full gets video(8)+trace(12)=20; video-only gets just video(8)
-    expect(full.breakdown.completeness).toBeGreaterThan(videoOnly.breakdown.completeness);
-    expect(videoOnly.breakdown.completeness).toBeLessThanOrEqual(8);
+  it("rewards longer recordings on duration (with diminishing returns)", () => {
+    const shortClip = scoreProofOfPlay(strong({ durationMs: 4000 }), false, false);
+    const longClip = scoreProofOfPlay(strong({ durationMs: 60000 }), false, false);
+    expect(longClip.breakdown.duration).toBeGreaterThan(shortClip.breakdown.duration);
   });
 
   it("rewards on-task actions over off-task ones", () => {
@@ -116,16 +106,16 @@ describe("scoreProofOfPlay — trace bundle scoring", () => {
     expect(on.breakdown.taskRelevance).toBeGreaterThan(off.breakdown.taskRelevance);
   });
 
-  it("collapses duplicate and blank bundles", () => {
+  it("collapses duplicate and blank recordings", () => {
     const dup = scoreProofOfPlay(strong(), true, false);
     expect(dup.total).toBeLessThan(PRESCREEN_THRESHOLD);
     expect(dup.breakdown.uniqueness).toBe(0);
-    const blank = scoreProofOfPlay(strong({ sizeBytes: 1024 }), false, true);
+    const blank = scoreProofOfPlay(strong({ sizeBytes: 1024, durationMs: 0 }), false, true);
     expect(blank.total).toBeLessThan(PRESCREEN_THRESHOLD);
-    expect(blank.breakdown.completeness).toBe(0);
+    expect(blank.breakdown.duration).toBe(0);
   });
 
-  it("is deterministic and varied across bundles", () => {
+  it("is deterministic and varied across recordings", () => {
     expect(scoreProofOfPlay(strong(), false, false)).toEqual(scoreProofOfPlay(strong(), false, false));
     const scores = new Set<number>();
     for (let i = 0; i < 30; i++) {
@@ -137,12 +127,10 @@ describe("scoreProofOfPlay — trace bundle scoring", () => {
 });
 
 describe("signalsFromManifest", () => {
-  it("returns video-only defaults when no manifest", () => {
-    const s = signalsFromManifest(undefined);
-    expect(s.eventCount).toBe(0);
-    expect(s.hasVideo).toBe(true);
+  it("returns zero duration when no manifest", () => {
+    expect(signalsFromManifest(undefined).durationMs).toBe(0);
   });
-  it("extracts signals from a manifest", () => {
+  it("extracts duration from a manifest", () => {
     const m: TraceManifest = {
       version: "playproof-trace/1",
       taskType: "web_form",
@@ -150,13 +138,9 @@ describe("signalsFromManifest", () => {
       startedAt: 0,
       screen: { width: 1280, height: 720 },
       video: { mimeType: "video/webm", sizeBytes: 500000 },
-      events: { count: 50, byType: {}, keystrokes: 30, pointerMoves: 15, clicks: 5 },
+      events: { count: 0, byType: {} },
     };
-    const s = signalsFromManifest(m);
-    expect(s.eventCount).toBe(50);
-    expect(s.keystrokes).toBe(30);
-    expect(s.clicks).toBe(5);
-    expect(s.hasVideo).toBe(true);
+    expect(signalsFromManifest(m).durationMs).toBe(12000);
   });
 });
 
@@ -172,8 +156,8 @@ describe("trainingValue + thresholds + vocab integrity", () => {
       expect(TASK_ACTIONS[k].length).toBeGreaterThan(0);
     }
   });
-  it("MIN_TRACE_EVENTS and PRESCREEN_THRESHOLD are sane", () => {
-    expect(MIN_TRACE_EVENTS).toBeGreaterThan(0);
+  it("MIN_DURATION_MS and PRESCREEN_THRESHOLD are sane", () => {
+    expect(MIN_DURATION_MS).toBeGreaterThan(0);
     expect(PRESCREEN_THRESHOLD).toBeGreaterThan(0);
     expect(PRESCREEN_THRESHOLD).toBeLessThanOrEqual(100);
   });

@@ -1,19 +1,15 @@
 "use client";
 
-// Browser-based trace recorder: captures a screen recording (getDisplayMedia +
-// MediaRecorder) PLUS a synced stream of input events (keyboard/mouse/pointer/
-// scroll), timestamped against the recording clock. Produces { video, events,
-// screen, startedAt } the pipeline packs into a 0G Storage trace bundle.
-//
-// This is why video alone isn't enough for computer-use training: agents learn
-// from the *inputs* a human produced against what was on screen. We record both.
+// Browser screen recorder: captures a screen/window/tab recording via
+// getDisplayMedia + MediaRecorder. You pick what to share, then perform the task
+// anywhere — the video captures it. (Per-keystroke input capture would require a
+// desktop agent or extension; a web page can't see input in other apps, so we
+// record the screen only and don't pretend otherwise.)
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { TraceEvent } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
 
 export type TraceResult = {
   video: Blob;
-  events: TraceEvent[];
   screen: { width: number; height: number };
   startedAt: number;
   durationMs: number;
@@ -31,70 +27,21 @@ export default function TraceRecorder({
   const [phase, setPhase] = useState<Phase>("idle");
   const [err, setErr] = useState("");
   const [elapsed, setElapsed] = useState(0);
-  const [eventCount, setEventCount] = useState(0);
-  const [keystrokes, setKeystrokes] = useState(0);
-  const [clicks, setClicks] = useState(0);
 
   const streamRef = useRef<MediaStream | null>(null);
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
-  const eventsRef = useRef<TraceEvent[]>([]);
   const startRef = useRef(0);
-  const lastMoveRef = useRef(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const now = () => Math.round(performance.now() - startRef.current);
 
-  const record = useCallback((e: TraceEvent) => {
-    eventsRef.current.push(e);
-    setEventCount(eventsRef.current.length);
-    if (e.type === "keydown") setKeystrokes((k) => k + 1);
-    if (e.type === "click") setClicks((c) => c + 1);
-  }, []);
-
-  // ── Global input listeners active only while recording ──
   useEffect(() => {
-    if (phase !== "recording") return;
-
-    const onKey = (ev: KeyboardEvent) =>
-      record({ t: now(), type: "keydown", key: ev.key, code: ev.code, mod: modBits(ev) });
-    const onKeyUp = (ev: KeyboardEvent) => record({ t: now(), type: "keyup", key: ev.key });
-    const onDown = (ev: MouseEvent) =>
-      record({ t: now(), type: "mousedown", button: ev.button, x: ev.clientX, y: ev.clientY });
-    const onUp = (ev: MouseEvent) => record({ t: now(), type: "mouseup", button: ev.button });
-    const onClick = (ev: MouseEvent) =>
-      record({ t: now(), type: "click", x: ev.clientX, y: ev.clientY, target: targetDesc(ev.target) });
-    const onMove = (ev: MouseEvent) => {
-      // Throttle moves to ~20Hz to keep the trace compact.
-      const t = now();
-      if (t - lastMoveRef.current < 50) return;
-      lastMoveRef.current = t;
-      record({ t, type: "mousemove", x: ev.clientX, y: ev.clientY });
-    };
-    const onWheel = (ev: WheelEvent) =>
-      record({ t: now(), type: "wheel", dx: Math.round(ev.deltaX), dy: Math.round(ev.deltaY) });
-    const onScroll = () =>
-      record({ t: now(), type: "scroll", x: window.scrollX, y: window.scrollY });
-
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("keyup", onKeyUp, true);
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("mouseup", onUp, true);
-    window.addEventListener("click", onClick, true);
-    window.addEventListener("mousemove", onMove, true);
-    window.addEventListener("wheel", onWheel, true);
-    window.addEventListener("scroll", onScroll, true);
     return () => {
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("keyup", onKeyUp, true);
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("mouseup", onUp, true);
-      window.removeEventListener("click", onClick, true);
-      window.removeEventListener("mousemove", onMove, true);
-      window.removeEventListener("wheel", onWheel, true);
-      window.removeEventListener("scroll", onScroll, true);
+      if (tickRef.current) clearInterval(tickRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, [phase, record]);
+  }, []);
 
   async function start() {
     setErr("");
@@ -105,10 +52,6 @@ export default function TraceRecorder({
       });
       streamRef.current = stream;
       chunksRef.current = [];
-      eventsRef.current = [];
-      setEventCount(0);
-      setKeystrokes(0);
-      setClicks(0);
       setElapsed(0);
       startRef.current = performance.now();
 
@@ -145,13 +88,14 @@ export default function TraceRecorder({
 
     const durationMs = now();
     const video = new Blob(chunksRef.current, { type: "video/webm" });
-    const track = stream?.getVideoTracks()[0];
-    const settings = track?.getSettings();
+    const settings = stream?.getVideoTracks()[0]?.getSettings();
     setPhase("done");
     onResult({
       video,
-      events: eventsRef.current,
-      screen: { width: settings?.width ?? window.screen.width, height: settings?.height ?? window.screen.height },
+      screen: {
+        width: settings?.width ?? window.screen.width,
+        height: settings?.height ?? window.screen.height,
+      },
       startedAt: Date.now() - durationMs,
       durationMs,
     });
@@ -162,78 +106,54 @@ export default function TraceRecorder({
     onResult(null);
   }
 
-  const supported =
-    typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia;
+  const supported = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia;
 
   return (
-    <div className="rounded-xl border border-edge bg-panel2/50 p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="label">Trace recorder · screen + synced inputs</span>
+    <div className="rounded-deck border border-rail bg-ink/40 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="stamp">▍ recorder</span>
         {phase === "recording" && (
-          <span className="chip border-bad/50 text-bad">
-            <span className="h-2 w-2 rounded-full bg-bad animate-pulseGlow" /> REC {fmt(elapsed)}
+          <span className="chip border-rec/60 text-rec">
+            <span className="h-2 w-2 rounded-full bg-rec animate-recPulse" /> REC {fmt(elapsed)}
           </span>
         )}
       </div>
 
       {!supported ? (
-        <p className="text-sm text-bad">
+        <p className="text-sm text-rec">
           Screen capture isn&apos;t available in this browser. Use the file upload fallback below.
         </p>
       ) : phase === "idle" ? (
-        <button className="btn-primary w-full" disabled={disabled} onClick={start}>
-          ⏺ Record task (screen + keyboard/mouse)
+        <button className="btn-rec w-full" disabled={disabled} onClick={start}>
+          <span className="h-2.5 w-2.5 rounded-full bg-bone" /> Record the task — share a screen, window, or tab
         </button>
       ) : phase === "recording" ? (
         <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <Meter n={eventCount} l="events" />
-            <Meter n={keystrokes} l="keystrokes" />
-            <Meter n={clicks} l="clicks" />
+          <div className="rounded-deck border border-rec/40 bg-rec/5 py-4 text-center">
+            <div className="readout text-3xl font-bold text-rec">{fmt(elapsed)}</div>
+            <div className="label mt-1.5">recording · perform the task now</div>
           </div>
-          <button className="btn-ghost w-full border-bad/50 text-bad" onClick={stop}>
-            ⏹ Stop & finish trace
+          <button className="btn-ghost w-full border-rec/50 text-rec hover:border-rec" onClick={stop}>
+            ◼ Stop &amp; finish
           </button>
           <p className="text-center text-xs text-muted">
-            Perform the task now — your inputs are being captured and synced to the screen video.
+            Switch to any window or app — the shared screen keeps recording.
           </p>
         </div>
       ) : (
         <div className="space-y-2 text-center">
-          <div className="text-sm text-good">✓ Trace captured</div>
-          <div className="text-xs text-muted">
-            {eventCount} input events recorded ({keystrokes} keys, {clicks} clicks)
-          </div>
+          <div className="text-sm font-semibold text-phosphor">✓ Take captured · {fmt(elapsed)}</div>
           <button className="btn-ghost w-full" onClick={reset}>
             Re-record
           </button>
         </div>
       )}
 
-      {err && <p className="mt-2 text-xs text-bad">{err}</p>}
+      {err && <p className="mt-2 font-mono text-xs text-rec">{err}</p>}
     </div>
   );
 }
 
-function Meter({ n, l }: { n: number; l: string }) {
-  return (
-    <div className="rounded-lg border border-edge bg-ink/40 py-1.5">
-      <div className="text-lg font-bold tabular-nums">{n}</div>
-      <div className="label">{l}</div>
-    </div>
-  );
-}
-
-function modBits(e: KeyboardEvent) {
-  return (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
-}
-function targetDesc(t: EventTarget | null) {
-  const el = t as HTMLElement | null;
-  if (!el?.tagName) return "";
-  return [el.tagName.toLowerCase(), el.id && `#${el.id}`, (el as any).type && `[${(el as any).type}]`]
-    .filter(Boolean)
-    .join("");
-}
 function fmt(s: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }

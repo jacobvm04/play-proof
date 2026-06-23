@@ -8,39 +8,108 @@
 
 html,
 body {
-  background: radial-gradient(1200px 600px at 70% -10%, rgba(124, 92, 255, 0.18), transparent 60%),
-    radial-gradient(1000px 500px at 0% 0%, rgba(34, 211, 238, 0.1), transparent 55%), #0a0a0f;
-  color: #e7e7f0;
+  background: #0b0e0c;
+  color: #e9e7dd;
   min-height: 100vh;
 }
 
-@layer components {
-  .card {
-    @apply rounded-2xl border border-edge bg-panel/80 backdrop-blur p-5;
+/* Edit-bay backdrop: a cold vignette + a barely-there horizontal scanline
+   texture, like a monitor in a dark room. Static, not animated — atmosphere. */
+body {
+  background-image:
+    radial-gradient(120% 80% at 50% -20%, rgba(201, 240, 60, 0.05), transparent 60%),
+    radial-gradient(90% 60% at 100% 0%, rgba(155, 208, 232, 0.04), transparent 55%),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  background-attachment: fixed;
+}
+
+@layer base {
+  ::selection {
+    background: rgba(201, 240, 60, 0.25);
+    color: #e9e7dd;
   }
-  .chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-edge bg-panel2 px-2.5 py-1 text-xs font-medium text-muted;
-  }
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed;
-  }
-  .btn-primary {
-    @apply btn bg-brand text-white hover:bg-brand/90 shadow-glow;
-  }
-  .btn-ghost {
-    @apply btn border border-edge bg-panel2 text-white hover:border-brand/60;
-  }
-  .label {
-    @apply text-[11px] uppercase tracking-wider text-muted;
-  }
-  .stat {
-    @apply text-2xl font-bold tracking-tight;
+  *:focus-visible {
+    outline: 2px solid #c9f03c;
+    outline-offset: 2px;
   }
 }
 
-/* Animated gradient bar used in the live pipeline. */
+@layer components {
+  /* A deck panel — flat hardware, hairline seam, tight radius, inset top light. */
+  .card {
+    @apply rounded-deck border border-edge bg-deck p-5 shadow-inset;
+  }
+
+  /* Equipment label: small, uppercase, wide-tracked, graphite. */
+  .label {
+    @apply font-mono text-[10px] uppercase tracking-stamp text-muted;
+  }
+
+  /* A readout chip — monospace, like a value on a meter. */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-deck border border-edge bg-ink/60 px-2.5 py-1 font-mono text-[11px] text-muted;
+  }
+
+  /* Transport-style buttons. The primary is the phosphor "commit" action. */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-deck px-4 py-2.5 text-sm font-semibold tracking-wide transition disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply btn bg-phosphor text-ink hover:bg-phosphor/90;
+  }
+  .btn-ghost {
+    @apply btn border border-rail bg-deck text-bone hover:border-phosphor/60;
+  }
+  .btn-rec {
+    @apply btn bg-rec text-bone shadow-rec hover:bg-rec/90;
+  }
+
+  /* Section header stamp: a wide-tracked uppercase title with a leading tick. */
+  .stamp {
+    @apply font-mono text-[11px] uppercase tracking-stamp text-muted;
+  }
+
+  /* The numeric readout (counter / timecode / big stat). */
+  .readout {
+    @apply font-mono tabular-nums text-bone;
+  }
+}
+
+/* The signature: a transport timeline rail with a sweeping playhead. */
+.transport {
+  position: relative;
+  height: 6px;
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(
+      to right,
+      rgba(233, 231, 221, 0.16) 0px,
+      rgba(233, 231, 221, 0.16) 1px,
+      transparent 1px,
+      transparent 14px
+    ),
+    #12150f;
+  border: 1px solid #2c332a;
+  overflow: hidden;
+}
+.transport > .playhead {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  background: #c9f03c;
+  box-shadow: 0 0 8px 0 rgba(201, 240, 60, 0.8);
+}
+
+/* Pipeline progress fill — phosphor sweep on a dark rail. */
 .pipeline-fill {
-  background: linear-gradient(90deg, #7c5cff, #22d3ee, #7c5cff);
+  background: linear-gradient(90deg, transparent, #c9f03c, transparent);
   background-size: 200% 100%;
 }
 
@@ -48,7 +117,22 @@ body {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-track {
+  background: #0b0e0c;
+}
 ::-webkit-scrollbar-thumb {
-  background: #2a2a3a;
-  border-radius: 8px;
+  background: #2c332a;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4236;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

@@ -1,28 +1,18 @@
 // Shared types across API routes, lib, and UI.
 
-// ── Trace bundle: the actual training artifact ──
-// Video alone is weak for computer-use agents — they need the *inputs* the human
-// produced, synced to the screen. A trace bundle is the recorded screen video
-// PLUS a timestamped stream of input events (keyboard/mouse/pointer/scroll),
-// plus a manifest. The bundle (not just the video) is what gets stored on 0G
-// Storage and scored.
-
-export type InputEventType =
-  | "keydown"
-  | "keyup"
-  | "mousedown"
-  | "mouseup"
-  | "mousemove"
-  | "click"
-  | "scroll"
-  | "wheel"
-  | "input"
-  | "nav";
+// ── Recording bundle: the training artifact ──
+// A contributor records a screen capture of a computer-use task. The recording
+// (plus a small manifest) is what gets stored on 0G Storage and scored.
+//
+// NOTE: per-keystroke/mouse input capture needs a desktop agent or browser
+// extension — a web page can't see input in other apps. So the browser recorder
+// captures the screen only. The `events`/`TraceEvent` plumbing is retained so a
+// future desktop recorder can attach an input trace without a schema change; the
+// web flow leaves it empty.
 
 export type TraceEvent = {
-  t: number; // ms since recording start (synced to the video clock)
-  type: InputEventType;
-  // Sparse, type-dependent payload (key, button, x, y, dx, dy, target, value…).
+  t: number; // ms since recording start
+  type: string;
   [k: string]: unknown;
 };
 
@@ -33,12 +23,10 @@ export type TraceManifest = {
   startedAt: number;
   screen: { width: number; height: number };
   video: { mimeType: string; sizeBytes: number };
+  // Reserved for a future desktop recorder; the web flow records 0 events.
   events: {
     count: number;
     byType: Record<string, number>;
-    keystrokes: number;
-    pointerMoves: number;
-    clicks: number;
   };
   contributor?: string;
 };
@@ -46,7 +34,7 @@ export type TraceManifest = {
 // ── AI pre-screen output (0G Compute) ──
 export type TraceLabels = {
   taskType: string;       // e.g. "web_form", "spreadsheet", "game_fps"
-  actions: string[];      // high-level actions inferred from the input stream
+  actions: string[];      // high-level actions inferred from the recording
   quality_score: number;  // 0..100
   training_value: "low" | "medium" | "high";
   reason: string;
@@ -55,10 +43,10 @@ export type TraceLabels = {
 export type ProofOfPlay = {
   total: number; // 0..100 — headline AI pre-score
   breakdown: {
-    uniqueness: number;     // 0..25
-    taskRelevance: number;  // 0..30
-    inputRichness: number;  // 0..25 — keystroke + pointer density (the trace signal)
-    completeness: number;   // 0..20 — has both video and synced input events
+    uniqueness: number;    // 0..25
+    taskRelevance: number; // 0..30
+    visualQuality: number; // 0..25 — resolution/bitrate proxy from file size
+    duration: number;      // 0..20 — enough footage to be a usable example
   };
 };
 
@@ -77,14 +65,12 @@ export type AnalysisResult = {
   // AI pre-screen verdict (a signal). Final approval is decided by human review.
   preApproved: boolean;
   duplicate: boolean;
-  hasTrace: boolean; // bundle included synced input events (not video-only)
 };
 
-// On-chain review state mirrored for the UI.
+// Review state mirrored for the UI (a single trusted review settles it).
 export type ReviewState = {
-  positiveReviews: number;
-  totalReviews: number;
-  requiredReviews: number;
+  reviewer?: string; // who settled it
+  reviewedAt?: number;
 };
 
 // Indexed submission record (mirrors on-chain + adds off-chain UX metadata).
@@ -92,7 +78,7 @@ export type SubmissionRecord = {
   id: number; // on-chain submission id (or -1 if not yet on-chain)
   bountyId: number;
   contributor: string;
-  storageRootHash: string;   // 0G Storage root of the trace BUNDLE
+  storageRootHash: string;   // 0G Storage root of the recording
   storageTxHash?: string;
   videoUrl?: string;         // local preview of the screen recording
   manifest?: TraceManifest;
@@ -104,7 +90,7 @@ export type SubmissionRecord = {
   review: ReviewState;
   submitTxHash?: string;
   aiScoreTxHash?: string;
-  finalizeTxHash?: string;
+  reviewTxHash?: string;
   paid: boolean;
   claimTxHash?: string;
   createdAt: number;
@@ -116,10 +102,9 @@ export type Bounty = {
   title: string;
   taskType: string;
   rewardPerClipWei: string;
-  rewardPerClip: string;     // formatted native token
+  rewardPerClip: string;     // formatted native token (0G)
   reviewerRewardWei: string;
   reviewerReward: string;    // formatted
-  requiredReviews: number;
   remainingBudget: string;   // formatted
   approvedCount: number;
   active: boolean;

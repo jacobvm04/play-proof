@@ -4,28 +4,29 @@ pragma solidity ^0.8.26;
 /**
  * @title PlayProof
  * @notice Onchain marketplace for verified human computer-use data — the
- *         recorded traces (screen + synced keyboard/mouse input) that train
- *         computer-use AI agents. Gaming is one task category among many
- *         (form-filling, spreadsheet navigation, web research, etc.).
+ *         recorded screen captures of real tasks that train computer-use AI
+ *         agents. Gaming is one task category among many (form-filling,
+ *         spreadsheet navigation, web research, etc.).
  *
- * Trust model — AI pre-screen + decentralized human review consensus:
- *   1. A dataset buyer (AI team) calls createBounty() for a task type and
- *      escrows: rewardPerClip (paid to the contributor on approval) plus a
- *      per-review reward (paid to each reviewer). They set requiredReviews = N.
- *   2. A contributor records a trace bundle, uploads it to 0G Storage, then
- *      calls submitClip() with the bundle's 0G Storage root hash. 0G Compute
- *      assigns an AI pre-score (a signal, stored on-chain — NOT the final word).
- *   3. Up to N independent reviewers each call submitReview(id, approve) once.
- *      Reviewers are paid the per-review reward immediately for participating.
- *   4. Once N reviews are in, anyone calls finalize(id): the submission is
- *      APPROVED iff a strict majority (>50%) of reviews are positive, else
- *      REJECTED. The tally is computed trustlessly in the contract.
- *   5. On approval the contributor calls claimReward().
+ * Trust model — single trusted-reviewer verification:
+ *   1. A dataset buyer (AI team) creates a bounty and escrows: rewardPerClip
+ *      (paid to the contributor on approval) + reviewerReward (paid to the
+ *      reviewer for their verdict).
+ *   2. A contributor records a task, uploads it to 0G Storage, then calls
+ *      submitClip() with the recording's 0G Storage root hash. The oracle may
+ *      record a 0G Compute aiPreScore as an optional signal.
+ *   3. A single trusted reviewer calls submitReview(id, approve). That one
+ *      verdict SETTLES the submission immediately: approve → Approved (the
+ *      contributor can claim), reject → Rejected (reward returns to budget).
+ *      The reviewer is paid reviewerReward either way.
+ *   4. On approval the contributor calls claimReward().
+ *
+ * Reviewer trust is enforced off-chain by the app (only trusted wallets are
+ * shown the review queue); the contract records who reviewed for provenance.
  *
  * Provenance that matters lives on 0G Chain: contributor, the 0G Storage root
- * hash, the task bounty, the AI pre-score, every reviewer's verdict, the
- * consensus outcome, and the payouts. Trace bytes live on 0G Storage; AI
- * pre-scoring runs on 0G Compute. This contract is settlement + provenance.
+ * hash, the bounty, the optional AI pre-score, the reviewer + verdict, and the
+ * payouts. Recordings live on 0G Storage; AI pre-scoring runs on 0G Compute.
  */
 contract PlayProof {
     // ─────────────────────────────── Types ───────────────────────────────
@@ -33,11 +34,10 @@ contract PlayProof {
     struct Bounty {
         uint256 id;
         address creator;        // dataset buyer (AI team)
-        string title;           // "Fill out a multi-step web form"
-        string taskType;        // canonical category, e.g. "web_form", "spreadsheet", "game_fps"
+        string title;
+        string taskType;        // canonical category, e.g. "web_form", "game_fps"
         uint256 rewardPerClip;  // wei paid to contributor per approved submission
-        uint256 reviewerReward; // wei paid to each reviewer who reviews a submission
-        uint8 requiredReviews;  // N reviews needed before finalize() is allowed
+        uint256 reviewerReward; // wei paid to the reviewer who settles a submission
         uint256 remainingBudget;
         uint256 approvedCount;
         bool active;
@@ -47,34 +47,29 @@ contract PlayProof {
         uint256 id;
         uint256 bountyId;
         address contributor;
-        string storageRootHash; // 0G Storage root hash of the trace bundle
-        uint256 aiPreScore;     // 0..100 from 0G Compute — a signal, not the verdict
-        uint16 positiveReviews;
-        uint16 totalReviews;
+        string storageRootHash; // 0G Storage root hash of the recording
+        uint256 aiPreScore;     // optional 0G Compute signal (0..100)
+        address reviewer;        // who settled it (address(0) until reviewed)
         Status status;
         bool paid;
     }
 
     enum Status {
-        Pending,   // awaiting reviews
-        Approved,  // >50% positive at finalize
-        Rejected   // not a majority
+        Pending,   // awaiting a trusted review
+        Approved,  // a trusted reviewer approved
+        Rejected   // a trusted reviewer rejected
     }
 
     // ────────────────────────────── Storage ──────────────────────────────
 
     address public owner;   // deployer; can rotate the oracle
-    address public oracle;  // posts AI pre-scores (runs 0G Compute)
+    address public oracle;  // posts optional AI pre-scores (runs 0G Compute)
 
     Bounty[] public bounties;
     Submission[] public submissions;
 
     mapping(uint256 => uint256[]) public submissionsByBounty;
     mapping(address => uint256[]) public submissionsByContributor;
-    // submissionId => reviewer => has reviewed (one vote per wallet)
-    mapping(uint256 => mapping(address => bool)) public hasReviewed;
-    // submissionId => list of reviewers (for provenance)
-    mapping(uint256 => address[]) public reviewersOf;
 
     mapping(address => uint256) public earnedByContributor; // claimed rewards
     mapping(address => uint256) public approvedByContributor;
@@ -90,7 +85,6 @@ contract PlayProof {
         string taskType,
         uint256 rewardPerClip,
         uint256 reviewerReward,
-        uint8 requiredReviews,
         uint256 budget
     );
     event ClipSubmitted(
@@ -100,14 +94,12 @@ contract PlayProof {
         string storageRootHash
     );
     event AiPreScored(uint256 indexed submissionId, uint256 aiPreScore);
-    event ReviewSubmitted(
+    event SubmissionReviewed(
         uint256 indexed submissionId,
         address indexed reviewer,
         bool approve,
-        uint16 positiveReviews,
-        uint16 totalReviews
+        Status status
     );
-    event SubmissionFinalized(uint256 indexed submissionId, Status status, uint16 positiveReviews, uint16 totalReviews);
     event RewardClaimed(uint256 indexed submissionId, address indexed contributor, uint256 amount);
     event OracleChanged(address indexed oracle);
     event BountyFunded(uint256 indexed bountyId, uint256 amount);
@@ -125,11 +117,7 @@ contract PlayProof {
     error ZeroReward();
     error TransferFailed();
     error BadScore();
-    error BadReviewCount();
-    error AlreadyReviewed();
     error CannotReviewOwn();
-    error ReviewsNotComplete();
-    error ReviewsFull();
 
     // ─────────────────────────────── Modifiers ───────────────────────────
 
@@ -156,18 +144,15 @@ contract PlayProof {
     // ─────────────────────────────── Bounties ────────────────────────────
 
     /// @notice Create a task-data bounty and escrow its budget (msg.value).
-    /// @dev Budget must cover at least one full payout: rewardPerClip plus
-    ///      N reviewer rewards.
+    /// @dev Budget must cover at least one full payout: rewardPerClip + reviewerReward.
     function createBounty(
         string calldata title,
         string calldata taskType,
         uint256 rewardPerClip,
-        uint256 reviewerReward,
-        uint8 requiredReviews
+        uint256 reviewerReward
     ) external payable returns (uint256 bountyId) {
         if (rewardPerClip == 0) revert ZeroReward();
-        if (requiredReviews == 0 || requiredReviews > 50) revert BadReviewCount();
-        uint256 perSubmission = rewardPerClip + uint256(reviewerReward) * requiredReviews;
+        uint256 perSubmission = rewardPerClip + reviewerReward;
         if (msg.value < perSubmission) revert InsufficientBudget();
 
         bountyId = bounties.length;
@@ -179,16 +164,13 @@ contract PlayProof {
                 taskType: taskType,
                 rewardPerClip: rewardPerClip,
                 reviewerReward: reviewerReward,
-                requiredReviews: requiredReviews,
                 remainingBudget: msg.value,
                 approvedCount: 0,
                 active: true
             })
         );
 
-        emit BountyCreated(
-            bountyId, msg.sender, title, taskType, rewardPerClip, reviewerReward, requiredReviews, msg.value
-        );
+        emit BountyCreated(bountyId, msg.sender, title, taskType, rewardPerClip, reviewerReward, msg.value);
     }
 
     function fundBounty(uint256 bountyId) external payable {
@@ -212,9 +194,9 @@ contract PlayProof {
 
     // ───────────────────────────── Submissions ───────────────────────────
 
-    /// @notice Contributor submits a trace bundle's 0G Storage root hash.
-    /// @dev Reserves the full per-submission cost (contributor reward + all
-    ///      reviewer rewards) so reviews and the final claim are always solvent.
+    /// @notice Contributor submits a recording's 0G Storage root hash.
+    /// @dev Reserves the full per-submission cost (contributor reward +
+    ///      reviewer reward) so the review payout and the claim are solvent.
     function submitClip(uint256 bountyId, string calldata storageRootHash)
         external
         returns (uint256 submissionId)
@@ -222,7 +204,7 @@ contract PlayProof {
         Bounty storage b = bounties[bountyId];
         if (!b.active) revert BountyInactive();
 
-        uint256 perSubmission = b.rewardPerClip + uint256(b.reviewerReward) * b.requiredReviews;
+        uint256 perSubmission = b.rewardPerClip + b.reviewerReward;
         if (b.remainingBudget < perSubmission) revert InsufficientBudget();
         b.remainingBudget -= perSubmission;
 
@@ -234,8 +216,7 @@ contract PlayProof {
                 contributor: msg.sender,
                 storageRootHash: storageRootHash,
                 aiPreScore: 0,
-                positiveReviews: 0,
-                totalReviews: 0,
+                reviewer: address(0),
                 status: Status.Pending,
                 paid: false
             })
@@ -247,7 +228,7 @@ contract PlayProof {
         emit ClipSubmitted(submissionId, bountyId, msg.sender, storageRootHash);
     }
 
-    /// @notice Oracle records the 0G Compute AI pre-score (a review signal).
+    /// @notice Oracle records an optional 0G Compute AI pre-score signal.
     function setAiPreScore(uint256 submissionId, uint256 aiPreScore) external onlyOracle {
         if (aiPreScore > 100) revert BadScore();
         Submission storage s = submissions[submissionId];
@@ -256,24 +237,32 @@ contract PlayProof {
         emit AiPreScored(submissionId, aiPreScore);
     }
 
-    // ─────────────────────────────── Reviews ─────────────────────────────
-
-    /// @notice An independent reviewer casts a verdict (approve/reject) once.
-    ///         Paid the bounty's per-review reward immediately for participating.
+    /// @notice A single trusted reviewer settles a submission with one verdict.
+    ///         approve → Approved (claimable); reject → Rejected (reward returned
+    ///         to the bounty budget). The reviewer is paid reviewerReward either
+    ///         way. Reviewer trust is gated by the app, not on-chain.
     function submitReview(uint256 submissionId, bool approve) external {
         Submission storage s = submissions[submissionId];
         if (s.status != Status.Pending) revert NotPending();
         if (s.contributor == msg.sender) revert CannotReviewOwn();
-        if (hasReviewed[submissionId][msg.sender]) revert AlreadyReviewed();
 
         Bounty storage b = bounties[s.bountyId];
-        if (s.totalReviews >= b.requiredReviews) revert ReviewsFull();
 
-        hasReviewed[submissionId][msg.sender] = true;
-        reviewersOf[submissionId].push(msg.sender);
-        s.totalReviews += 1;
-        if (approve) s.positiveReviews += 1;
+        s.reviewer = msg.sender;
         reviewsByReviewer[msg.sender] += 1;
+
+        if (approve) {
+            s.status = Status.Approved;
+            b.approvedCount += 1;
+            approvedByContributor[s.contributor] += 1;
+        } else {
+            s.status = Status.Rejected;
+            // Return the contributor's reserved reward to the bounty budget
+            // (the reviewer reward is paid out below regardless).
+            b.remainingBudget += b.rewardPerClip;
+        }
+
+        emit SubmissionReviewed(submissionId, msg.sender, approve, s.status);
 
         // Pay the reviewer reward (reserved at submitClip time).
         uint256 r = b.reviewerReward;
@@ -282,33 +271,6 @@ contract PlayProof {
             (bool ok, ) = payable(msg.sender).call{value: r}("");
             if (!ok) revert TransferFailed();
         }
-
-        emit ReviewSubmitted(submissionId, msg.sender, approve, s.positiveReviews, s.totalReviews);
-    }
-
-    /// @notice Finalize a submission once N reviews are in. Anyone may call.
-    ///         APPROVED iff a strict majority (>50%) of reviews are positive.
-    function finalize(uint256 submissionId) external {
-        Submission storage s = submissions[submissionId];
-        if (s.status != Status.Pending) revert NotPending();
-
-        Bounty storage b = bounties[s.bountyId];
-        if (s.totalReviews < b.requiredReviews) revert ReviewsNotComplete();
-
-        // Strict majority: positive * 2 > total.
-        bool approved = uint256(s.positiveReviews) * 2 > uint256(s.totalReviews);
-        if (approved) {
-            s.status = Status.Approved;
-            b.approvedCount += 1;
-            approvedByContributor[s.contributor] += 1;
-        } else {
-            s.status = Status.Rejected;
-            // Return the contributor's reserved reward to the bounty budget
-            // (reviewer rewards were already paid out as reviews came in).
-            b.remainingBudget += b.rewardPerClip;
-        }
-
-        emit SubmissionFinalized(submissionId, s.status, s.positiveReviews, s.totalReviews);
     }
 
     /// @notice Contributor claims the reward for an approved submission.
@@ -349,8 +311,5 @@ contract PlayProof {
     }
     function getSubmissionsByContributor(address who) external view returns (uint256[] memory) {
         return submissionsByContributor[who];
-    }
-    function getReviewers(uint256 submissionId) external view returns (address[] memory) {
-        return reviewersOf[submissionId];
     }
 }

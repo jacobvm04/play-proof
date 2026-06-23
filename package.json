@@ -16,10 +16,11 @@
     "test:watch": "vitest tests/scoring.test.ts",
     "test:unit": "vitest run tests/scoring.test.ts tests/contract.test.ts",
     "test:e2e": "node scripts/run-e2e.mjs",
-    "test:all": "node scripts/run-e2e.mjs"
+    "test:all": "node scripts/run-e2e.mjs",
+    "ship": "node scripts/deploy-vercel.mjs"
   },
   "dependencies": {
-    "@0glabs/0g-ts-sdk": "^0.3.1",
+    "@0gfoundation/0g-ts-sdk": "^1.2.8",
     "ethers": "6.13.1",
     "next": "^14.2.33",
     "react": "^18.3.1",

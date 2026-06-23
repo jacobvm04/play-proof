@@ -15,23 +15,25 @@ const provider = new ethers.JsonRpcProvider(chain.rpc);
 const wallet = new ethers.Wallet(chain.privateKey, provider);
 const contract = new ethers.Contract(ADDR, artifact().abi, wallet);
 
-// title, taskType, rewardPerClip, reviewerReward, requiredReviews, submissions funded
+// title, taskType, rewardPerClip, reviewerReward, submissions funded.
+// Sized for a faucet-funded testnet wallet (~0.5 0G): small rewards, a few
+// fundable takes each, so the whole board seeds for well under the balance and
+// leaves room for gas + live demo payouts.
 const BOUNTIES = [
-  ["Fill out a multi-step web form (signup → verify → submit)", "web_form", "0.01", "0.001", 3, 15],
-  ["Navigate & edit a spreadsheet to a target state", "spreadsheet", "0.012", "0.001", 3, 12],
-  ["Research a question across multiple browser tabs", "web_research", "0.012", "0.001", 3, 12],
-  ["Triage an email inbox: label, archive, reply", "email_triage", "0.01", "0.001", 3, 12],
-  ["Game: FPS aim-correction sequences", "game_fps", "0.008", "0.001", 3, 12],
-  ["Game: platformer parkour failure recovery", "game_parkour", "0.008", "0.001", 3, 12],
+  ["Fill out a multi-step web form (signup → verify → submit)", "web_form", "0.005", "0.0005", 3],
+  ["Navigate & edit a spreadsheet to a target state", "spreadsheet", "0.005", "0.0005", 3],
+  ["Research a question across multiple browser tabs", "web_research", "0.005", "0.0005", 2],
+  ["Triage an email inbox: label, archive, reply", "email_triage", "0.005", "0.0005", 2],
+  ["Game: FPS aim-correction sequences", "game_fps", "0.004", "0.0005", 2],
+  ["Game: platformer parkour failure recovery", "game_parkour", "0.004", "0.0005", 2],
 ];
 
-for (const [title, taskType, reward, revReward, n, count] of BOUNTIES) {
+for (const [title, taskType, reward, revReward, count] of BOUNTIES) {
   const rewardWei = ethers.parseEther(reward);
   const revWei = ethers.parseEther(revReward);
-  const perSubmission = rewardWei + revWei * BigInt(n);
-  const budget = perSubmission * BigInt(count);
+  const budget = (rewardWei + revWei) * BigInt(count);
   process.stdout.write(`Creating "${title}" … `);
-  const tx = await contract.createBounty(title, taskType, rewardWei, revWei, n, { value: budget });
+  const tx = await contract.createBounty(title, taskType, rewardWei, revWei, { value: budget });
   const rc = await tx.wait();
   console.log(`ok (block ${rc.blockNumber})`);
 }

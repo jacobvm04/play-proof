@@ -45,30 +45,28 @@ beforeAll(async () => {
   }
 }, 30000);
 
-describe("PlayProof on-chain lifecycle", () => {
-  it("approves a submission when a strict majority of reviewers approve, then pays out", async () => {
+
+describe("PlayProof on-chain lifecycle (single trusted review)", () => {
+  it("a single approval settles the submission and pays contributor + reviewer", async () => {
     const oracleW = wallets[1];
     const buyer = wallets[2];
     const contributor = wallets[3];
-    const reviewers = [wallets[4], wallets[5], wallets[6]]; // N=3
+    const reviewer = wallets[4];
 
     const c = await deploy(oracleW.address);
 
-    // 1. Buyer creates + funds a bounty (reward 0.01, reviewerReward 0.001, N=3).
+    // 1. Buyer creates + funds a bounty (reward 0.01, reviewerReward 0.001).
     const reward = E("0.01");
     const revReward = E("0.001");
-    const N = 3;
-    const perSub = reward + revReward * BigInt(N);
-    const txB = await (c.connect(buyer) as any).createBounty(
-      "Fill out a web form", "web_form", reward, revReward, N, { value: perSub * 2n }
-    );
-    await txB.wait();
+    const perSub = reward + revReward;
+    await (await (c.connect(buyer) as any).createBounty(
+      "Fill out a web form", "web_form", reward, revReward, { value: perSub * 2n }
+    )).wait();
     expect(Number(await c.bountyCount())).toBe(1);
 
-    // 2. Contributor submits a trace bundle's 0G Storage root hash.
+    // 2. Contributor submits a recording's 0G Storage root hash.
     const root = "0x" + "ab".repeat(32);
-    const txS = await (c.connect(contributor) as any).submitClip(0, root);
-    const rcS = await txS.wait();
+    const rcS = await (await (c.connect(contributor) as any).submitClip(0, root)).wait();
     const subId = Number(
       rcS.logs.map((l: any) => { try { return c.interface.parseLog(l); } catch { return null; } })
         .find((p: any) => p?.name === "ClipSubmitted").args.submissionId
@@ -79,107 +77,82 @@ describe("PlayProof on-chain lifecycle", () => {
     expect(s.storageRootHash).toBe(root);
     expect(Number(s.status)).toBe(0); // Pending
 
-    // 3. Oracle posts the 0G Compute AI pre-score.
+    // 3. Oracle posts the optional AI pre-score signal.
     await (await (c.connect(oracleW) as any).setAiPreScore(0, 88)).wait();
-    s = await c.getSubmission(0);
-    expect(Number(s.aiPreScore)).toBe(88);
+    expect(Number((await c.getSubmission(0)).aiPreScore)).toBe(88);
 
-    // 4. Three independent reviewers vote: approve, approve, reject → 2/3 positive.
-    const balBefore = await provider.getBalance(reviewers[0].address);
-    await (await (c.connect(reviewers[0]) as any).submitReview(0, true)).wait();
-    await (await (c.connect(reviewers[1]) as any).submitReview(0, true)).wait();
-    await (await (c.connect(reviewers[2]) as any).submitReview(0, false)).wait();
-    s = await c.getSubmission(0);
-    expect(Number(s.totalReviews)).toBe(3);
-    expect(Number(s.positiveReviews)).toBe(2);
-    // Reviewer got paid the review reward (minus gas, so net change is positive-ish:
-    // assert the contract credited earnedByReviewer regardless of gas).
-    expect(await c.earnedByReviewer(reviewers[0].address)).toBe(revReward);
-
-    // 5. Anyone finalizes; 2/3 > 50% → Approved.
-    await (await (c.connect(wallets[7]) as any).finalize(0)).wait();
+    // 4. A single trusted reviewer approves → settles immediately.
+    await (await (c.connect(reviewer) as any).submitReview(0, true)).wait();
     s = await c.getSubmission(0);
     expect(Number(s.status)).toBe(1); // Approved
+    expect(s.reviewer).toBe(reviewer.address);
     expect(Number(await c.approvedByContributor(contributor.address))).toBe(1);
+    // Reviewer was paid the review reward.
+    expect(await c.earnedByReviewer(reviewer.address)).toBe(revReward);
 
-    // 6. Contributor claims the reward.
+    // 5. Contributor claims the reward.
     const balPre = await provider.getBalance(contributor.address);
-    const txC = await (c.connect(contributor) as any).claimReward(0);
-    const rcC = await txC.wait();
+    const rcC = await (await (c.connect(contributor) as any).claimReward(0)).wait();
     const gas = rcC.gasUsed * rcC.gasPrice;
-    const balPost = await provider.getBalance(contributor.address);
-    expect(balPost).toBe(balPre + reward - gas);
+    expect(await provider.getBalance(contributor.address)).toBe(balPre + reward - gas);
     expect(await c.earnedByContributor(contributor.address)).toBe(reward);
 
     // Double-claim must revert.
     await expect((c.connect(contributor) as any).claimReward(0)).rejects.toThrow();
   });
 
-  it("rejects a submission when the majority rejects, and returns reward to budget", async () => {
-    const oracleW = wallets[1];
+  it("a single rejection settles as rejected and returns the reward to budget", async () => {
     const buyer = wallets[2];
     const contributor = wallets[3];
-    const reviewers = [wallets[4], wallets[5], wallets[6]];
+    const reviewer = wallets[4];
 
-    const c = await deploy(oracleW.address);
+    const c = await deploy(wallets[1].address);
     const reward = E("0.01");
     const revReward = E("0.001");
-    const N = 3;
-    const perSub = reward + revReward * BigInt(N);
-    await (await (c.connect(buyer) as any).createBounty("X", "web_form", reward, revReward, N, { value: perSub })).wait();
+    await (await (c.connect(buyer) as any).createBounty("X", "web_form", reward, revReward, { value: reward + revReward })).wait();
     await (await (c.connect(contributor) as any).submitClip(0, "0x" + "cd".repeat(32))).wait();
 
-    const budgetAfterSubmit = (await c.getBounty(0)).remainingBudget;
-    expect(budgetAfterSubmit).toBe(0n); // entire perSub reserved
+    // entire perSub reserved at submit
+    expect((await c.getBounty(0)).remainingBudget).toBe(0n);
 
-    // 1 approve, 2 reject → minority positive → Rejected.
-    await (await (c.connect(reviewers[0]) as any).submitReview(0, true)).wait();
-    await (await (c.connect(reviewers[1]) as any).submitReview(0, false)).wait();
-    await (await (c.connect(reviewers[2]) as any).submitReview(0, false)).wait();
-    await (await (c.connect(wallets[7]) as any).finalize(0)).wait();
-
+    await (await (c.connect(reviewer) as any).submitReview(0, false)).wait();
     const s = await c.getSubmission(0);
     expect(Number(s.status)).toBe(2); // Rejected
-    // The contributor reward is returned to the bounty budget (reviewers keep theirs).
+    // Contributor reward returned to budget; reviewer still paid.
     expect((await c.getBounty(0)).remainingBudget).toBe(reward);
+    expect(await c.earnedByReviewer(reviewer.address)).toBe(revReward);
 
     // Rejected submission cannot be claimed.
     await expect((c.connect(contributor) as any).claimReward(0)).rejects.toThrow();
   });
 
-  it("enforces review guard rails", async () => {
-    const oracleW = wallets[1];
+  it("enforces guard rails", async () => {
     const contributor = wallets[3];
-    const c = await deploy(oracleW.address);
-    const reward = E("0.01"), revReward = E("0.001"), N = 3;
-    await (await (c.connect(wallets[2]) as any).createBounty("X", "web_form", reward, revReward, N, {
-      value: (reward + revReward * BigInt(N)),
-    })).wait();
+    const c = await deploy(wallets[1].address);
+    const reward = E("0.01"), revReward = E("0.001");
+    await (await (c.connect(wallets[2]) as any).createBounty("X", "web_form", reward, revReward, { value: reward + revReward })).wait();
     await (await (c.connect(contributor) as any).submitClip(0, "0x" + "ef".repeat(32))).wait();
 
     // Contributor cannot review their own submission.
     await expect((c.connect(contributor) as any).submitReview(0, true)).rejects.toThrow();
 
-    // Cannot finalize before N reviews are in.
-    await expect((c.connect(wallets[7]) as any).finalize(0)).rejects.toThrow();
-
-    // A reviewer cannot review twice.
-    await (await (c.connect(wallets[4]) as any).submitReview(0, true)).wait();
-    await expect((c.connect(wallets[4]) as any).submitReview(0, true)).rejects.toThrow();
-
     // Only the oracle can set the AI pre-score.
     await expect((c.connect(wallets[5]) as any).setAiPreScore(0, 50)).rejects.toThrow();
+
+    // Settle it, then a second review must revert (already settled).
+    await (await (c.connect(wallets[4]) as any).submitReview(0, true)).wait();
+    await expect((c.connect(wallets[5]) as any).submitReview(0, true)).rejects.toThrow();
   });
 
   it("rejects bounties with bad parameters", async () => {
     const c = await deploy(wallets[1].address);
-    // requiredReviews = 0
+    // zero reward
     await expect(
-      (c.connect(wallets[2]) as any).createBounty("X", "t", E("0.01"), E("0.001"), 0, { value: E("0.01") })
+      (c.connect(wallets[2]) as any).createBounty("X", "t", 0n, E("0.001"), { value: E("0.01") })
     ).rejects.toThrow();
     // budget too small to cover one full payout
     await expect(
-      (c.connect(wallets[2]) as any).createBounty("X", "t", E("0.01"), E("0.001"), 3, { value: E("0.005") })
+      (c.connect(wallets[2]) as any).createBounty("X", "t", E("0.01"), E("0.001"), { value: E("0.005") })
     ).rejects.toThrow();
   });
 });

@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import type { Bounty, SubmissionRecord } from "@/lib/types";
 import { claimRewardOnChain } from "@/lib/client-contract";
-import { OG, explorerTx } from "@/lib/config";
+import { OG } from "@/lib/config";
+import { TxLink } from "./links";
 
 // A contributor's own submissions and their review/claim status.
 export default function MySubmissions({
@@ -50,11 +51,6 @@ function Row({ s, bounty, onRefresh }: { s: SubmissionRecord; bounty?: Bounty; o
     try {
       const h = await claimRewardOnChain(s.id);
       setTx(h);
-      await fetch("/api/claim", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ submissionId: s.id, storageRootHash: s.storageRootHash, txHash: h }),
-      });
       setMsg("✓ Claimed");
       onRefresh();
     } catch (e: any) {
@@ -72,12 +68,16 @@ function Row({ s, bounty, onRefresh }: { s: SubmissionRecord; bounty?: Bounty; o
       : "border-warn/50 text-warn";
 
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-edge bg-panel2/40 px-3 py-2.5">
+    <div className="flex items-center gap-3 rounded-deck border border-edge bg-panel2/40 px-3 py-2.5">
       <span className="chip">#{s.id}</span>
       <div className="flex-1">
         <div className="truncate text-sm font-semibold">{bounty?.title ?? `Bounty ${s.bountyId}`}</div>
         <div className="text-xs text-muted">
-          reviews {s.review.totalReviews}/{s.review.requiredReviews} · {s.review.positiveReviews} positive · AI {s.analysis.proofOfPlay.total}
+          {s.status === "pending"
+            ? "awaiting verification"
+            : s.status === "approved"
+            ? "verified by a trusted reviewer"
+            : "rejected by a reviewer"}
         </div>
       </div>
       <span className={`chip ${statusPill}`}>{s.status}</span>
@@ -88,13 +88,10 @@ function Row({ s, bounty, onRefresh }: { s: SubmissionRecord; bounty?: Bounty; o
       )}
       {s.paid && (
         <span className="chip border-good/50 text-good">
-          paid{" "}
-          {s.claimTxHash && (
-            <a href={explorerTx(s.claimTxHash)} target="_blank" rel="noreferrer" className="ml-1 underline">↗</a>
-          )}
+          paid <TxLink hash={s.claimTxHash} className="ml-1 underline">↗</TxLink>
         </span>
       )}
-      {msg && <span className="text-xs text-muted">{msg} {tx && <a href={explorerTx(tx)} target="_blank" rel="noreferrer" className="text-brand2">↗</a>}</span>}
+      {msg && <span className="text-xs text-muted">{msg} <TxLink hash={tx} className="text-brand2">↗</TxLink></span>}
     </div>
   );
 }

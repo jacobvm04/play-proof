@@ -1,0 +1,9 @@
+# Keep local-dev + test cruft out of the deploy.
+tests
+scripts/local-chain.mjs
+scripts/run-e2e.mjs
+data
+/contracts
+.env.local
+public/clips
+vitest.config.ts

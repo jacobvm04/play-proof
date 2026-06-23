@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { allSubmissions } from "@/lib/db";
-import { fetchBounties } from "@/lib/contract";
+import { fetchBounties, fetchSubmissions } from "@/lib/contract";
 import { OG } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
@@ -14,19 +13,17 @@ export async function GET(req: NextRequest) {
   const bountyId = Number(searchParams.get("bountyId"));
   const download = searchParams.get("download") === "1";
 
-  const bounties = await fetchBounties();
+  const [bounties, all] = await Promise.all([fetchBounties(), fetchSubmissions()]);
   const bounty = bounties.find((b) => b.id === bountyId);
-  const subs = allSubmissions().filter((s) => s.bountyId === bountyId && s.status === "approved");
+  const subs = all.filter((s) => s.bountyId === bountyId && s.status === "approved");
 
   const labelCounts: Record<string, number> = {};
   let totalScore = 0;
   let totalMs = 0;
-  let totalEvents = 0;
   for (const s of subs) {
     for (const a of s.analysis.labels.actions) labelCounts[a] = (labelCounts[a] ?? 0) + 1;
     totalScore += s.analysis.proofOfPlay.total;
     totalMs += s.manifest?.durationMs ?? 0;
-    totalEvents += s.manifest?.events.count ?? 0;
   }
   const contributors = Array.from(new Set(subs.map((s) => s.contributor)));
 
@@ -39,17 +36,16 @@ export async function GET(req: NextRequest) {
       network: OG.networkName,
       storageIndexer: OG.storageExplorer,
       contract: OG.contract || null,
-      verification: "human-review-consensus (>50% of N reviewers) + 0G Compute pre-screen",
+      verification: "verified by a trusted human reviewer on 0G Chain",
     },
     stats: {
-      bundles: subs.length,
+      recordings: subs.length,
       contributors: contributors.length,
       totalMinutes: +(totalMs / 60000).toFixed(1),
-      totalInputEvents: totalEvents,
       avgAiPreScore: subs.length ? Math.round(totalScore / subs.length) : 0,
       labelDistribution: labelCounts,
     },
-    bundles: subs.map((s) => ({
+    recordings: subs.map((s) => ({
       submissionId: s.id,
       contributor: s.contributor,
       storageRootHash: s.storageRootHash,
@@ -57,11 +53,10 @@ export async function GET(req: NextRequest) {
       actions: s.analysis.labels.actions,
       taskType: s.analysis.labels.taskType,
       aiPreScore: s.analysis.proofOfPlay.total,
-      humanReview: s.review,
+      reviewedBy: s.review?.reviewer ?? null,
       trainingValue: s.analysis.labels.training_value,
       durationMs: s.manifest?.durationMs ?? null,
-      inputEvents: s.manifest?.events ?? null,
-      finalizeTxHash: s.finalizeTxHash ?? null,
+      reviewTxHash: s.reviewTxHash ?? null,
     })),
   };
 

@@ -20,7 +20,8 @@ const MAGIC = "PPTB1"; // PlayProof Trace Bundle v1
 
 export function buildManifest(args: {
   taskType: string;
-  events: TraceEvent[];
+  events: TraceEvent[]; // empty for the web (screen-only) flow
+  durationMs: number;
   videoMime: string;
   videoSize: number;
   screen: { width: number; height: number };
@@ -29,16 +30,9 @@ export function buildManifest(args: {
 }): TraceManifest {
   const { events } = args;
   const byType: Record<string, number> = {};
-  let keystrokes = 0;
-  let pointerMoves = 0;
-  let clicks = 0;
-  for (const e of events) {
-    byType[e.type] = (byType[e.type] ?? 0) + 1;
-    if (e.type === "keydown") keystrokes++;
-    else if (e.type === "mousemove") pointerMoves++;
-    else if (e.type === "click" || e.type === "mousedown") clicks++;
-  }
-  const durationMs = events.length ? Math.max(...events.map((e) => e.t)) : 0;
+  for (const e of events) byType[e.type] = (byType[e.type] ?? 0) + 1;
+  // Prefer the recording's own duration; fall back to the last event timestamp.
+  const durationMs = args.durationMs || (events.length ? Math.max(...events.map((e) => e.t)) : 0);
   return {
     version: "playproof-trace/1",
     taskType: args.taskType,
@@ -46,7 +40,7 @@ export function buildManifest(args: {
     startedAt: args.startedAt,
     screen: args.screen,
     video: { mimeType: args.videoMime, sizeBytes: args.videoSize },
-    events: { count: events.length, byType, keystrokes, pointerMoves, clicks },
+    events: { count: events.length, byType },
     contributor: args.contributor,
   };
 }
@@ -76,5 +70,21 @@ export function readManifest(bundle: Buffer): TraceManifest | undefined {
     return JSON.parse(json).manifest as TraceManifest;
   } catch {
     return undefined;
+  }
+}
+
+/** Extract the screen-recording video bytes + mime from a bundle (best-effort). */
+export function videoFromBundle(bundle: Buffer): { bytes: Buffer; mime: string } | null {
+  try {
+    if (bundle.subarray(0, 5).toString("ascii") !== MAGIC) {
+      // Not a PlayProof bundle — assume the buffer is the raw video itself.
+      return { bytes: bundle, mime: "video/webm" };
+    }
+    const len = bundle.readUInt32BE(5);
+    const manifest = readManifest(bundle);
+    const bytes = bundle.subarray(9 + len);
+    return { bytes, mime: manifest?.video?.mimeType?.split(";")[0] || "video/webm" };
+  } catch {
+    return null;
   }
 }

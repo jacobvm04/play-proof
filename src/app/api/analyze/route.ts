@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "node:fs";
-import path from "node:path";
-import { uploadToOgStorage } from "@/lib/storage";
+import { uploadToOgStorage, cacheBundle } from "@/lib/storage";
 import { getComputeProvider } from "@/lib/compute";
-import { seenHashesForBounty } from "@/lib/db";
 import { fetchBounties } from "@/lib/contract";
 import { buildManifest, packBundle } from "@/lib/bundle";
 import type { TraceEvent } from "@/lib/types";
@@ -25,6 +22,7 @@ export async function POST(req: NextRequest) {
     const screenW = Number(form.get("screenW") || 0);
     const screenH = Number(form.get("screenH") || 0);
     const startedAt = Number(form.get("startedAt") || Date.now());
+    const durationMs = Number(form.get("durationMs") || 0);
 
     if (!(video instanceof File)) {
       return NextResponse.json({ ok: false, error: "No screen recording provided." }, { status: 400 });
@@ -51,6 +49,7 @@ export async function POST(req: NextRequest) {
     const manifest = buildManifest({
       taskType,
       events,
+      durationMs,
       videoMime: video.type || "video/webm",
       videoSize: videoBytes.length,
       screen: { width: screenW || 1280, height: screenH || 720 },
@@ -59,37 +58,39 @@ export async function POST(req: NextRequest) {
     });
     const bundle = packBundle(manifest, events, videoBytes);
 
-    // ── Save a local video preview so the UI can play it back ──
-    const clipsDir = path.join(process.cwd(), "public", "clips");
-    fs.mkdirSync(clipsDir, { recursive: true });
-    const ext = (video.type.split("/")[1] || "webm").replace(/[^a-z0-9]/gi, "");
-    const safeName = `${Date.now()}-${(contributor || "anon").slice(0, 8)}.${ext}`;
-    fs.writeFileSync(path.join(clipsDir, safeName), videoBytes);
-    const videoUrl = `/clips/${safeName}`;
-
     // ── 0G Storage: upload the WHOLE bundle, get the canonical root hash ──
-    const storage = await uploadToOgStorage(bundle, `${safeName}.pptb`);
+    const t0 = Date.now();
+    const storage = await uploadToOgStorage(bundle, "recording.pptb");
+    const tUpload = Date.now() - t0;
 
-    // ── 0G Compute: AI pre-screen + labeling ──
+    // Cache the bundle in memory so it plays back instantly this session, and so
+    // the chain-backed submission list can read its manifest without a download.
+    cacheBundle(storage.rootHash, bundle);
+
+    // ── 0G Compute: AI pre-screen + labeling (a signal; not surfaced as score) ──
+    // Dedup against on-chain submissions is skipped here — it required scanning
+    // every submission and was a needless drag on the upload path. A duplicate
+    // just creates another on-chain submission, which is harmless.
     const provider = getComputeProvider();
     const analysis = await provider.analyze({
       bytes: bundle,
-      fileName: `${safeName}.pptb`,
+      fileName: "recording.pptb",
       mimeType: "application/x-playproof-bundle",
       taskType,
       bountyTitle,
       storageRootHash: storage.rootHash,
-      seenHashes: seenHashesForBounty(bountyId),
+      seenHashes: [],
       manifest,
     });
+    console.log(`[analyze] bytes=${videoBytes.length} upload=${tUpload}ms total=${Date.now() - t0}ms uploaded=${storage.uploaded}`);
 
     return NextResponse.json({
       ok: true,
       storage,
       analysis,
       manifest,
-      videoUrl,
-      fileName: `${safeName}.pptb`,
+      videoUrl: `/api/clip/${storage.rootHash}`,
+      fileName: "recording.pptb",
       sizeBytes: bundle.length,
     });
   } catch (err: any) {

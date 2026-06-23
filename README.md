@@ -1,196 +1,118 @@
 # ▰ PlayProof
 
-**Onchain marketplace for verified human computer-use data — the traces that train AI agents.**
+**Get paid in 0G to record the human task data that trains computer-use AI agents.**
 
-> PlayProof is a decentralized network where people get paid to contribute
-> verified recordings of real computer-use tasks (screen **+ synced
-> keyboard/mouse input**), used to train computer-use AI agents.
+Record a task on screen, get it verified, and claim your reward — every recording stored on 0G Storage, every payout settled on 0G Chain.
 
-Computer-use AI agents need real human task traces — today that data is scraped,
-video-only, unverified, and unpaid. PlayProof is the decentralized alternative:
-**people record tasks, AI pre-screens them, humans verify by review consensus, 0G
-stores the bundles, and everyone gets paid onchain.** Games (FPS, parkour) are
-just one task category among many (form-filling, spreadsheets, web research,
-email triage…).
+**Live app → https://play-proof.vercel.app**
+**Demo video → https://cap.so/s/yrrd2ye9j52jqkn**
+Contract on 0G Galileo testnet → [`0x576Edfa1c1963E1E05C70441EeFA505aCb54eE50`](https://chainscan-galileo.0g.ai/address/0x576Edfa1c1963E1E05C70441EeFA505aCb54eE50)
 
 ---
 
-## Why a *trace bundle*, not a video
+## Why this matters
 
-Video alone is weak training data for computer-use agents — agents learn from the
-**inputs a human produced** against what was on screen. So a PlayProof submission
-is a **trace bundle**:
+Computer-use agents — the AI that clicks, types, and navigates software for you — are only as good as the human demonstrations they learn from. That data is scarce, and today it's scraped, unattributed, and unpaid.
 
-```
-bundle = [magic]["PPTB1"][manifest+events JSON][screen-recording video]
-```
+PlayProof turns it into a market. People record real tasks and get paid. AI teams buy verified data with provenance baked in. The whole loop lives on 0G.
 
-- **screen video** (getDisplayMedia + MediaRecorder)
-- **synced input event stream** — every keydown/keyup, mousemove (throttled),
-  click, scroll, wheel, timestamped against the video clock
-- **manifest** — durations, event histogram, screen size
+## How it works
 
-The *whole bundle* is hashed and stored on 0G Storage, so the on-chain root hash
-is tamper-evident provenance for the entire training artifact — not just the
-video. Video-only uploads are accepted as a fallback but score lower (the AI
-pre-score's `completeness` and `inputRichness` dimensions penalize missing input).
+1. A buyer posts a bounty for a task type ("fill out a multi-step web form") and escrows a reward in 0G.
+2. A contributor records the task on screen, in the browser. The recording goes to **0G Storage**; its merkle root hash becomes its fingerprint.
+3. The contributor submits onchain — root hash, address, and bounty land on **0G Chain**.
+4. A trusted reviewer watches it back and approves. One approval settles the submission and pays the reviewer.
+5. The contributor claims their reward in 0G.
 
----
+Buyers export a dataset manifest: every approved recording's 0G Storage root hash, contributor, and reviewer — provenance you can actually audit, ready to train on.
 
-## How 0G does real work here
+## Built on 0G
 
-| Layer | Role |
-|------|------|
-| **0G Storage** | Canonical home for trace bundles. Every upload returns a tamper-resistant merkle **root hash** written on-chain as provenance. |
-| **0G Compute** | The **AI pre-screen + labeling** layer — detects the task, labels actions from the input stream, scores quality, flags duplicates/blank. A *signal*, not the verdict. |
-| **0G Chain** | Settlement + provenance + **decentralized human review consensus**: bounties, submissions, the AI pre-score, every reviewer's verdict, the >50% outcome, and payouts. |
+**0G Storage** holds every recording. Uploads run through the `@0gfoundation/0g-ts-sdk`, and the returned merkle root hash is the provenance written onchain. Recordings stream back from 0G for playback.
 
-### Trust model: AI pre-screen + human review consensus
+**0G Chain** runs the marketplace. The `PlayProof` contract holds every bounty, submission, review, and payout. Contributors, reviewers, and buyers all transact natively on Galileo testnet (chain `16602`), and rewards are paid in the native 0G token.
 
-1. A **dataset buyer** posts a task bounty and escrows: a reward per approved
-   bundle + a small reward per review, and sets `requiredReviews = N`.
-2. A **contributor** records a task, the bundle uploads to 0G Storage, and they
-   sign `submitClip(bountyId, rootHash)`. The oracle posts the 0G Compute
-   `aiPreScore` on-chain (a signal for reviewers).
-3. **N independent reviewers** each play back the trace and sign
-   `submitReview(id, approve)` — paid the per-review reward for participating.
-4. Once N reviews are in, anyone calls `finalize(id)`: the contract approves iff
-   a **strict majority (>50%)** voted positive — computed trustlessly on-chain.
-5. On approval the contributor signs `claimReward(id)`.
+**0G Compute** powers an AI pre-screen that labels and scores each recording as a hint for reviewers — wired behind a provider interface and toggled per deployment. The verdict that pays out is always a human's, never the model's.
 
-So as long as >50% of reviewers are honest on any given sample, the label is
-trustworthy — and no single party (not even the AI) decides approval.
+That last point is the design: **AI suggests, humans decide.** Every recording in a PlayProof dataset carries a human signature, which is exactly what makes it worth training on.
 
----
+## Try it in two minutes
 
-## Quick start (local chain — no faucet needed)
+The live app runs on **0G Galileo testnet**. Bring an EVM wallet (MetaMask or Rabby; Phantom works with Testnet Mode on) and grab testnet 0G from the [faucet](https://faucet.0g.ai). Reviewers can't approve their own work, so the full loop uses two wallets.
 
-```bash
-npm install
-npm run compile          # contracts/PlayProof.sol → src/contracts/PlayProof.json
-
-# 1. Local EVM chain with funded accounts (stays running)
-npm run chain            # http://127.0.0.1:8545, chainId 31337
-
-# 2. In another shell: deploy + seed the demo task bounties
-npm run deploy           # CHAIN defaults to local; auto-fills the contract addr
-npm run seed
-
-# 3. Point the app at the local chain in .env.local:
-#    NEXT_PUBLIC_OG_CHAIN_ID=31337
-#    NEXT_PUBLIC_OG_RPC=http://127.0.0.1:8545
-#    OG_SERVER_PRIVATE_KEY=<first key from data/local-accounts.json>  (the oracle)
-#    (NEXT_PUBLIC_PLAYPROOF_CONTRACT was set by `npm run deploy`)
-
-npm run dev              # → http://localhost:3000
-```
-
-Add the local chain to MetaMask (RPC `http://127.0.0.1:8545`, chainId `31337`)
-and import a couple of the funded keys from `data/local-accounts.json` to play
-contributor + reviewer.
-
-### Deploy to real 0G Galileo testnet
-
-```bash
-# Fund OG_SERVER_PRIVATE_KEY at https://faucet.0g.ai, set the 0G values in
-# .env.local (chainId 16602, rpc https://evmrpc-testnet.0g.ai), then:
-CHAIN=0g npm run deploy
-CHAIN=0g npm run seed
-```
-
-On 0G, trace bundles are actually persisted to 0G Storage; on the local chain we
-stop at the (real) merkle root hash since there's no 0G indexer to pay.
-
----
-
-## The loop (demo)
-
-1. **Connect wallet** (network auto-adds).
-2. **Contribute** → pick a task (e.g. "Fill out a multi-step web form").
-3. **⏺ Record** — grant screen share, do the task; keystrokes/clicks/moves are
-   captured live and synced to the video.
-4. Watch the pipeline: bundle → **0G Storage** → **0G Compute** pre-screen
-   (task, actions, score, input-trace check) → `submitClip` on **0G Chain** →
-   oracle posts the AI pre-score → **awaiting human review**.
-5. **Review** tab (as another wallet) → play back a trace, **👍/👎** on-chain,
-   earn the per-review reward. After N reviews, `finalize` runs automatically.
-6. **My Submissions** → once >50% approve, **Claim** the reward.
-7. **Datasets & Buyers** → the bundle joins a live **dataset card**; download the
-   provenance-tracked manifest. Buyers can post new bounties here.
-
----
+1. Open **https://play-proof.vercel.app** and connect.
+2. **Record** → pick a bounty → screen-record the task → **Submit**. It uploads to 0G Storage and writes to 0G Chain.
+3. Switch to a trusted reviewer wallet → the **Review** tab appears → play it back → **Approve**.
+4. Back on the contributor wallet → **My Submissions → Claim** → 0G hits your wallet.
+5. **Datasets** → watch the dataset grow and download the manifest.
 
 ## Architecture
 
 ```
-Browser (Next.js + Tailwind, ethers v6 + MetaMask)
-├─ TraceRecorder: getDisplayMedia + MediaRecorder + global input listeners
-├─ Contributor signs: submitClip(), claimReward()
-├─ Reviewer signs:    submitReview()
-├─ Buyer signs:       createBounty()
+Browser (Next.js · ethers v6 · multi-wallet via EIP-6963)
 │
-└─ API routes (Node):
-     /api/analyze      bundle → 0G Storage upload → 0G Compute pre-screen
-     /api/aiscore      oracle → setAiPreScore(id, score) on 0G Chain
-     /api/review       mirror on-chain review tally into the index
-     /api/finalize     trigger finalize(); read >50% outcome from chain
-     /api/dataset      downloadable, provenance-tracked dataset manifest
+├─ Record: getDisplayMedia + MediaRecorder ──► /api/analyze
+│                                               ├─ package the recording
+│                                               └─ upload to 0G Storage ──► root hash + tx
+│
+├─ Contributor: submitClip(bountyId, rootHash)  ─┐
+├─ Reviewer:    submitReview(id, approve)        ├─►  0G Chain  (PlayProof.sol)
+├─ Contributor: claimReward(id)                  │
+├─ Buyer:       createBounty(...)                ─┘
+│
+└─ Reads come straight from 0G Chain · recordings stream from 0G Storage (/api/clip)
 ```
 
-- **Canonical truth**: trace bundles on 0G Storage, provenance + review consensus
-  + payouts on 0G Chain. `data/db.json` is a fast read cache for the dashboards
-  (swap for Supabase/SQLite — the shape in `src/lib/db.ts` is identical).
+No database. The contract on 0G Chain is the source of truth for every bounty, submission, and payout; recordings live on 0G Storage. The app reads both directly — which is why it runs fully serverless with nothing else to provision.
 
-### Smart contract (`contracts/PlayProof.sol`)
+### The contract (`contracts/PlayProof.sol`)
 
 ```solidity
-createBounty(title, taskType, rewardPerClip, reviewerReward, requiredReviews) payable
-submitClip(bountyId, storageRootHash)            // contributor — reserves full payout
-setAiPreScore(submissionId, score)   onlyOracle  // 0G Compute signal
-submitReview(submissionId, approve)              // reviewer — one vote, paid per review
-finalize(submissionId)                           // anyone — approves iff >50% positive
-claimReward(submissionId)                        // contributor — on approval
+createBounty(title, taskType, rewardPerClip, reviewerReward)  // buyer escrows the reward
+submitClip(bountyId, storageRootHash)                         // contributor records provenance
+submitReview(submissionId, approve)                           // a trusted reviewer settles it
+claimReward(submissionId)                                     // contributor is paid in 0G
 ```
 
-Compiled with `evmVersion: shanghai`. The full per-submission cost (contributor
-reward + all reviewer rewards) is reserved at `submitClip` time, so reviews and
-the final claim are always solvent; a rejected submission returns the
-contributor reward to the bounty budget.
+One approval settles a submission: approve makes it claimable, reject returns the reward to the bounty.
 
----
+## Stack
 
-## Tests
+Next.js 14 · TypeScript · Tailwind · ethers v6 · `@0gfoundation/0g-ts-sdk` · Solidity · Vercel
+
+## Run it locally
 
 ```bash
-npm run test:unit   # pure scoring core + on-chain contract lifecycle (in-process chain)
-npm run test:e2e    # boots local chain + deploy + seed + dev server, runs EVERYTHING
+npm install
+npm run compile          # contract → ABI + bytecode
+
+# Local chain — no faucet needed, has a built-in demo wallet
+npm run chain            # terminal 1: local EVM with funded test wallets
+npm run deploy           # deploy + auto-fill the contract address
+npm run seed             # create the demo bounties
+npm run dev              # http://localhost:3000
+
+# Or point it at real 0G Galileo testnet
+cp .env.example .env.local      # set OG_SERVER_PRIVATE_KEY (funded via faucet.0g.ai)
+CHAIN=0g npm run deploy && CHAIN=0g npm run seed
+npm run dev
 ```
 
-- **`tests/scoring.test.ts`** (17) — the pure AI pre-screen scoring core:
-  deterministic `det()` bounds + a regression test for the `>>>` precedence bug,
-  task-vocab selection, the 4-dimension breakdown (input-richness rewards rich
-  traces, completeness penalizes video-only), duplicate/blank collapse.
-- **`tests/contract.test.ts`** (4) — the FULL on-chain lifecycle against an
-  in-process EVM: createBounty → submitClip → setAiPreScore → N submitReview →
-  finalize (majority **approve** AND **reject** paths) → claimReward with exact
-  balance assertions, plus guard rails (no self-review, no double-review, no
-  early finalize, oracle-only pre-score, bad bounty params).
-- **`tests/api.integration.test.ts`** (4) — full-stack on-chain e2e through the
-  live API + real wallets: analyze→0G Storage→submitClip→aiscore→3 reviews→
-  finalize→claim, video-only penalty, and dataset-manifest provenance.
+### Tests
 
-25 tests, ~12s end to end. The harness (`scripts/run-e2e.mjs`) spins up the chain,
-deploys, seeds, wires a dev server to it, and tears everything down.
+```bash
+npm run test:unit   # scoring core + the full onchain contract lifecycle
+npm run test:e2e    # boots a chain + dev server and runs the whole flow end-to-end
+```
 
-> Perf note: the local JS EVM is slow on receipt polling; tests set
-> `provider.pollingInterval` low (instamine → receipts are immediate), which
-> took the on-chain suite from ~85s to ~6s.
+Submit → review → claim is covered with exact balance assertions and guard rails.
+
+### Ship it
+
+```bash
+npm run ship        # syncs env to Vercel and deploys to production
+```
 
 ---
 
-## Tech stack
-
-Next.js 14 (App Router) · Tailwind · ethers v6 + MetaMask · Solidity (solc,
-shanghai) · ganache (local chain) · `@0glabs/0g-ts-sdk` (0G Storage) ·
-`@0glabs/0g-serving-broker` (0G Compute, optional) · vitest · file-backed JSON
-index (Supabase/SQLite-ready).
+*PlayProof — the data layer for computer-use AI, built on 0G.*

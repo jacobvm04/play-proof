@@ -10,4 +10,4 @@ data/local-accounts.json
 .env.e2e.local
 public/clips/*
 !public/clips/.gitkeep
-src/contracts/PlayProof.json
+.vercel

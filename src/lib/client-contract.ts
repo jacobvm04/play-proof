@@ -6,46 +6,77 @@
 import { ethers } from "ethers";
 import artifact from "@/contracts/PlayProof.json";
 import { OG, OG_CHAIN_PARAMS } from "./config";
+import { burnerActive, burnerSigner } from "./burner";
+import { activeProvider, hasAnyWallet, isPhantom } from "./provider";
 
 declare global {
   interface Window {
     ethereum?: any;
+    phantom?: any;
   }
 }
 
 export function hasWallet() {
-  return typeof window !== "undefined" && !!window.ethereum;
+  return hasAnyWallet();
+}
+
+function provider() {
+  const p = activeProvider();
+  if (!p) throw new Error("No EVM wallet found. Install MetaMask, Rabby, or another EVM wallet.");
+  return p;
 }
 
 export async function connectWallet(): Promise<string> {
-  if (!hasWallet()) throw new Error("MetaMask not found. Install it to use PlayProof.");
-  const accounts: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const p = provider();
+  const accounts: string[] = await p.request({ method: "eth_requestAccounts" });
   await ensureOgNetwork();
   return accounts[0];
 }
 
 export async function ensureOgNetwork() {
-  const current = await window.ethereum.request({ method: "eth_chainId" });
+  const p = provider();
+  const current = await p.request({ method: "eth_chainId" });
   if (current?.toLowerCase() === OG.chainIdHex.toLowerCase()) return;
+
+  // Try to switch; if the chain is unknown, add it, then switch. We attempt the
+  // add on ANY switch failure (not just code 4902) because wallets differ in the
+  // error they return for an unknown chain.
   try {
-    await window.ethereum.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: OG.chainIdHex }],
-    });
-  } catch (err: any) {
-    if (err?.code === 4902 || /Unrecognized chain/i.test(err?.message ?? "")) {
-      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [OG_CHAIN_PARAMS] });
-    } else {
-      throw err;
+    await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: OG.chainIdHex }] });
+    return;
+  } catch (switchErr: any) {
+    try {
+      await p.request({ method: "wallet_addEthereumChain", params: [OG_CHAIN_PARAMS] });
+      // Some wallets switch automatically after adding; others need an explicit switch.
+      const after = await p.request({ method: "eth_chainId" });
+      if (after?.toLowerCase() !== OG.chainIdHex.toLowerCase()) {
+        await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: OG.chainIdHex }] });
+      }
+      return;
+    } catch (addErr: any) {
+      if (isPhantom(p)) {
+        throw new Error(
+          "Phantom couldn't switch to 0G Galileo testnet. Enable Testnet Mode in Phantom " +
+            "(Settings → Developer Settings), or use MetaMask/Rabby which support adding custom EVM networks."
+        );
+      }
+      throw new Error(
+        `Couldn't switch to ${OG.networkName} (chain ${OG.chainIdDec}). ` +
+          (addErr?.message || switchErr?.message || "Add it to your wallet manually.")
+      );
     }
   }
 }
 
 export async function getSignerContract() {
   if (!OG.contract) throw new Error("PlayProof contract address not configured.");
+  // Demo mode: sign with the in-app burner wallet (local chain only, no MetaMask).
+  if (burnerActive()) {
+    return new ethers.Contract(OG.contract, (artifact as any).abi, burnerSigner());
+  }
   await ensureOgNetwork();
-  const provider = new ethers.BrowserProvider(window.ethereum);
-  const signer = await provider.getSigner();
+  const browserProvider = new ethers.BrowserProvider(provider() as any);
+  const signer = await browserProvider.getSigner();
   return new ethers.Contract(OG.contract, (artifact as any).abi, signer);
 }
 
@@ -92,15 +123,13 @@ export async function createBountyOnChain(
   taskType: string,
   rewardPerClipEth: string,
   reviewerRewardEth: string,
-  requiredReviews: number,
   submissionCount: number
 ): Promise<string> {
   const c = await getSignerContract();
   const reward = ethers.parseEther(rewardPerClipEth);
   const revReward = ethers.parseEther(reviewerRewardEth);
-  const perSubmission = reward + revReward * BigInt(Math.max(1, requiredReviews));
-  const budget = perSubmission * BigInt(Math.max(1, submissionCount));
-  const tx = await c.createBounty(title, taskType, reward, revReward, requiredReviews, { value: budget });
+  const budget = (reward + revReward) * BigInt(Math.max(1, submissionCount));
+  const tx = await c.createBounty(title, taskType, reward, revReward, { value: budget });
   const rc = await tx.wait();
   return rc.hash;
 }

@@ -21,7 +21,6 @@
 import type { AnalysisResult, ComputeProvenance, TraceLabels, TraceManifest } from "./types";
 import {
   BLANK_BYTES_THRESHOLD,
-  MIN_TRACE_EVENTS,
   PRESCREEN_THRESHOLD,
   TASK_ACTIONS,
   TASK_LABELS,
@@ -34,14 +33,14 @@ import {
 } from "./scoring";
 
 export type AnalyzeInput = {
-  bytes: Buffer; // the trace BUNDLE bytes (video + events + manifest), zipped
+  bytes: Buffer; // the recording bundle bytes (manifest + video)
   fileName: string;
   mimeType: string;
   taskType: string;        // the bounty's canonical task type
   bountyTitle: string;
   storageRootHash: string; // 0G Storage root — canonical identity for dedup
   seenHashes: string[];    // root hashes already submitted to this bounty
-  manifest?: TraceManifest; // parsed trace manifest, if the bundle had one
+  manifest?: TraceManifest; // parsed recording manifest, if present
 };
 
 export interface ComputeProvider {
@@ -53,17 +52,14 @@ function buildLabels(
   input: AnalyzeInput,
   actions: string[],
   isBlank: boolean,
-  isDuplicate: boolean,
-  hasTrace: boolean
+  isDuplicate: boolean
 ): TraceLabels {
   const task = resolveTask(input.taskType);
   const reason = isBlank
-    ? "Session too short or blank to extract computer-use behavior."
+    ? "Recording too short or blank to extract computer-use behavior."
     : isDuplicate
-    ? "Byte-identical bundle already submitted to this bounty."
-    : !hasTrace
-    ? "Video present but missing a synced input trace — weak for agent training."
-    : `Clear ${TASK_LABELS[task].toLowerCase()} session with ${actions.length} distinct actions and a synced input trace.`;
+    ? "Byte-identical recording already submitted to this bounty."
+    : `Clear ${TASK_LABELS[task].toLowerCase()} recording with ${actions.length} distinct actions.`;
   return {
     taskType: task,
     actions,
@@ -88,9 +84,8 @@ class MockComputeProvider implements ComputeProvider {
 
     const actions = pickActions(hash, input.taskType);
     const sig = signalsFromManifest(input.manifest);
-    const hasTrace = sig.eventCount >= MIN_TRACE_EVENTS;
 
-    const labels = buildLabels(input, actions, isBlank, isDuplicate, hasTrace);
+    const labels = buildLabels(input, actions, isBlank, isDuplicate);
     const pop = scoreProofOfPlay(
       { contentHash: hash, sizeBytes: input.bytes.length, taskType: input.taskType, actions, ...sig },
       isDuplicate,
@@ -108,7 +103,6 @@ class MockComputeProvider implements ComputeProvider {
       },
       preApproved: !isDuplicate && !isBlank && pop.total >= PRESCREEN_THRESHOLD,
       duplicate: isDuplicate,
-      hasTrace,
     };
   }
 }
@@ -161,12 +155,11 @@ class OgComputeProvider implements ComputeProvider {
     const isDuplicate = input.seenHashes.includes(input.storageRootHash);
     const isBlank = input.bytes.length < BLANK_BYTES_THRESHOLD;
     const sig = signalsFromManifest(input.manifest);
-    const hasTrace = sig.eventCount >= MIN_TRACE_EVENTS;
 
     const modelActions: string[] = Array.isArray(parsed.actions) ? parsed.actions : [];
     const actions = modelActions.length ? modelActions : pickActions(hash, input.taskType);
 
-    const labels = buildLabels(input, actions, isBlank, isDuplicate, hasTrace);
+    const labels = buildLabels(input, actions, isBlank, isDuplicate);
     if (parsed.reason) labels.reason = parsed.reason;
     const pop = scoreProofOfPlay(
       { contentHash: hash, sizeBytes: input.bytes.length, taskType: input.taskType, actions, ...sig },
@@ -182,7 +175,6 @@ class OgComputeProvider implements ComputeProvider {
       compute: { ...this.provenance, note: `Inference via 0G Compute provider ${providerAddr.slice(0, 10)}…` },
       preApproved: !isDuplicate && !isBlank && pop.total >= PRESCREEN_THRESHOLD,
       duplicate: isDuplicate,
-      hasTrace,
     };
   }
 }
@@ -190,11 +182,11 @@ class OgComputeProvider implements ComputeProvider {
 function buildPrompt(input: AnalyzeInput): string {
   const m = input.manifest;
   return [
-    `A contributor recorded a computer-use session for the bounty: "${input.bountyTitle}".`,
+    `A contributor recorded a computer-use task for the bounty: "${input.bountyTitle}".`,
     `Task type: "${input.taskType}".`,
     m
-      ? `The trace bundle contains ${m.events.count} input events (${m.events.keystrokes} keystrokes, ${m.events.clicks} clicks, ${m.events.pointerMoves} pointer moves) over ${(m.durationMs / 1000).toFixed(1)}s of ${m.screen.width}x${m.screen.height} screen video.`
-      : `The bundle is video-only (no synced input trace).`,
+      ? `The screen recording is ${(m.durationMs / 1000).toFixed(1)}s at ${m.screen.width}x${m.screen.height}.`
+      : `A screen recording of the task.`,
     `Return JSON: {"actions": string[], "reason": string}.`,
     `actions must be from this vocabulary: ${TASK_ACTIONS[resolveTask(input.taskType)].join(", ")}.`,
   ].join("\n");

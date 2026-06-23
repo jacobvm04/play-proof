@@ -54,15 +54,15 @@ console.log("  deployed at", ADDR);
 
 const c = new ethers.Contract(ADDR, art.abi, deployer);
 const seed = [
-  ["Fill out a multi-step web form", "web_form", "0.01", "0.001", 3, 10],
-  ["Navigate & edit a spreadsheet", "spreadsheet", "0.012", "0.001", 3, 10],
-  ["Game: FPS aim-correction sequences", "game_fps", "0.008", "0.001", 3, 10],
+  ["Fill out a multi-step web form", "web_form", "0.01", "0.001", 10],
+  ["Navigate & edit a spreadsheet", "spreadsheet", "0.012", "0.001", 10],
+  ["Game: FPS aim-correction sequences", "game_fps", "0.008", "0.001", 10],
 ];
-for (const [title, taskType, reward, rev, n, count] of seed) {
+for (const [title, taskType, reward, rev, count] of seed) {
   const r = ethers.parseEther(reward);
   const rr = ethers.parseEther(rev);
-  const budget = (r + rr * BigInt(n)) * BigInt(count);
-  const tx = await c.createBounty(title, taskType, r, rr, n, { value: budget });
+  const budget = (r + rr) * BigInt(count);
+  const tx = await c.createBounty(title, taskType, r, rr, { value: budget });
   await tx.wait();
 }
 console.log(`  seeded ${seed.length} bounties`);

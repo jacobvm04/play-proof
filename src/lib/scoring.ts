@@ -35,10 +35,10 @@ export const TASK_LABELS: Record<string, string> = {
   default: "General computer-use task",
 };
 
-// Below this the bundle is treated as blank / not a real session.
+// Below this the recording is treated as blank / not a real session.
 export const BLANK_BYTES_THRESHOLD = 8 * 1024;
-// A usable trace needs at least this many input events to carry signal.
-export const MIN_TRACE_EVENTS = 10;
+// A usable recording should be at least this long to be a meaningful example.
+export const MIN_DURATION_MS = 3000;
 // AI pre-screen pass bar (a signal — humans decide final approval).
 export const PRESCREEN_THRESHOLD = 50;
 
@@ -61,7 +61,7 @@ export function resolveTask(taskType: string): string {
   return TASK_ACTIONS[taskType] ? taskType : "default";
 }
 
-/** Deterministically pick a subset of a task's action vocabulary for a bundle. */
+/** Deterministically pick a subset of a task's action vocabulary for a recording. */
 export function pickActions(contentHash: string, taskType: string): string[] {
   const pool = TASK_ACTIONS[resolveTask(taskType)];
   const chosen = pool.filter((_, i) => det(contentHash, "act" + i) > 0.35);
@@ -69,43 +69,35 @@ export function pickActions(contentHash: string, taskType: string): string[] {
 }
 
 export type ScoreInput = {
-  contentHash: string; // sha256 of the bundle bytes
+  contentHash: string; // sha256 of the recording bytes
   sizeBytes: number;
   taskType: string;
   actions: string[];
-  // Trace signal — from the manifest. Absent for video-only uploads.
-  eventCount: number;
-  keystrokes: number;
-  pointerMoves: number;
-  clicks: number;
-  hasVideo: boolean;
+  durationMs: number; // recording length
 };
 
 /**
- * AI pre-screen score = uniqueness + task relevance + input richness + completeness.
- * Input richness and completeness reward bundles that actually contain the synced
- * human inputs that make a recording useful for training computer-use agents.
+ * AI pre-screen score = uniqueness + task relevance + visual quality + duration.
+ * A signal that helps reviewers and filters obvious junk; humans decide approval.
  */
 export function scoreProofOfPlay(
   input: ScoreInput,
   isDuplicate: boolean,
   isBlank: boolean
 ): ProofOfPlay {
-  const hasTrace = input.eventCount >= MIN_TRACE_EVENTS;
-
   if (isBlank || isDuplicate) {
     return {
       total: isBlank ? 3 : 8,
       breakdown: {
         uniqueness: isDuplicate ? 0 : 2,
         taskRelevance: 0,
-        inputRichness: 0,
-        completeness: 0,
+        visualQuality: isBlank ? 0 : 5,
+        duration: 0,
       },
     };
   }
 
-  // Uniqueness (0..25): novel session.
+  // Uniqueness (0..25): novel recording.
   const uniqueness = clamp(18 + det(input.contentHash, "uniq") * 7, 0, 25);
 
   // Task relevance (0..30): how many actions match the task vocabulary.
@@ -113,25 +105,23 @@ export function scoreProofOfPlay(
   const overlap = input.actions.filter((a) => wanted.includes(a)).length;
   const taskRelevance = clamp((overlap / Math.max(1, wanted.length)) * 30, 0, 30);
 
-  // Input richness (0..25): density of human input — the key training signal.
-  // Keystrokes + meaningful pointer activity. Video-only bundles score ~0 here.
-  const inputUnits = input.keystrokes + input.clicks * 2 + Math.min(input.pointerMoves, 200) * 0.05;
-  const inputRichness = clamp(Math.log2(1 + inputUnits) * 4.5, 0, 25);
+  // Visual quality (0..25): proxy from resolution/bitrate ≈ file size, capped.
+  const sizeMB = input.sizeBytes / (1024 * 1024);
+  const visualQuality = clamp(8 + Math.log2(1 + sizeMB) * 4, 0, 25);
 
-  // Completeness (0..20): full marks only when BOTH a video and a real input
-  // trace are present. Video-only or trace-only is penalized.
-  let completeness = 0;
-  if (input.hasVideo) completeness += 8;
-  if (hasTrace) completeness += 12;
+  // Duration (0..20): enough footage to be a usable example, with diminishing
+  // returns past ~1 minute.
+  const seconds = input.durationMs / 1000;
+  const duration = clamp(Math.log2(1 + seconds) * 4, 0, 20);
 
-  const total = Math.round(uniqueness + taskRelevance + inputRichness + completeness);
+  const total = Math.round(uniqueness + taskRelevance + visualQuality + duration);
   return {
     total: clamp(total, 0, 100),
     breakdown: {
       uniqueness: Math.round(uniqueness),
       taskRelevance: Math.round(taskRelevance),
-      inputRichness: Math.round(inputRichness),
-      completeness: Math.round(completeness),
+      visualQuality: Math.round(visualQuality),
+      duration: Math.round(duration),
     },
   };
 }
@@ -140,14 +130,7 @@ export function trainingValue(score: number): TraceLabels["training_value"] {
   return score >= 80 ? "high" : score >= PRESCREEN_THRESHOLD ? "medium" : "low";
 }
 
-/** Pull the scoring-relevant signals out of a trace manifest (if present). */
+/** Pull the scoring-relevant signals out of a recording manifest (if present). */
 export function signalsFromManifest(m?: TraceManifest) {
-  if (!m) return { eventCount: 0, keystrokes: 0, pointerMoves: 0, clicks: 0, hasVideo: true };
-  return {
-    eventCount: m.events.count,
-    keystrokes: m.events.keystrokes,
-    pointerMoves: m.events.pointerMoves,
-    clicks: m.events.clicks,
-    hasVideo: (m.video?.sizeBytes ?? 0) > 0,
-  };
+  return { durationMs: m?.durationMs ?? 0 };
 }
