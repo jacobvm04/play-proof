@@ -10,31 +10,25 @@ Contract on 0G Galileo testnet → [`0x576Edfa1c1963E1E05C70441EeFA505aCb54eE50`
 
 ---
 
-## Why this matters
+## The idea
 
-Computer-use agents — the AI that clicks, types, and navigates software for you — are only as good as the human demonstrations they learn from. That data is scarce, and today it's scraped, unattributed, and unpaid.
+The next wave of AI clicks, types, and navigates software the way we do. To learn that, it needs to watch people actually do it — thousands of real screen recordings of real tasks. Right now that data gets scraped off the internet with no consent, no attribution, and no payment to the people whose work it came from.
 
-PlayProof turns it into a market. People record real tasks and get paid. AI teams buy verified data with provenance baked in. The whole loop lives on 0G.
+PlayProof makes it a fair trade instead. You record yourself doing a task, a reviewer confirms it's legit, and you get paid in 0G. An AI team on the other side gets a dataset where they can trace every single clip back to who made it and who checked it. Nobody's data gets taken — it gets bought.
 
-## How it works
+## Walking through it
 
-1. A buyer posts a bounty for a task type ("fill out a multi-step web form") and escrows a reward in 0G.
-2. A contributor records the task on screen, in the browser. The recording goes to **0G Storage**; its merkle root hash becomes its fingerprint.
-3. The contributor submits onchain — root hash, address, and bounty land on **0G Chain**.
-4. A trusted reviewer watches it back and approves. One approval settles the submission and pays the reviewer.
-5. The contributor claims their reward in 0G.
+Say an AI lab needs examples of people filling out web forms. They post a bounty and put up the reward. You see it, hit record, fill out a form on screen, and submit. Your recording goes to 0G Storage, and a fingerprint of it — the merkle root hash — gets written to 0G Chain along with your address. That hash is the receipt: it proves *this* recording existed and *you* made it, and it can't be quietly swapped out later.
 
-Buyers export a dataset manifest: every approved recording's 0G Storage root hash, contributor, and reviewer — provenance you can actually audit, ready to train on.
+Then a trusted reviewer plays it back. If it's real, they approve it — one click, settled onchain, and they earn a cut for checking. You claim your reward, and the clip joins the dataset. The buyer can export the whole thing as a manifest: every approved recording, its storage hash, who recorded it, who verified it. Provenance you can audit line by line.
 
-## Built on 0G
+## Where 0G comes in
 
-**0G Storage** holds every recording. Uploads run through the `@0gfoundation/0g-ts-sdk`, and the returned merkle root hash is the provenance written onchain. Recordings stream back from 0G for playback.
+This only works because all three pieces of 0G are doing real jobs, not sitting in the pitch.
 
-**0G Chain** runs the marketplace. The `PlayProof` contract holds every bounty, submission, review, and payout. Contributors, reviewers, and buyers all transact natively on Galileo testnet (chain `16602`), and rewards are paid in the native 0G token.
+The recordings live on **0G Storage** — uploaded through the official SDK, with the root hash that comes back becoming the onchain proof. **0G Chain** is the marketplace itself: a contract that holds every bounty, submission, review, and payout, with everyone transacting natively and getting paid in 0G. And **0G Compute** runs an AI pre-screen over each clip to flag and score it, so reviewers know where to look first.
 
-**0G Compute** powers an AI pre-screen that labels and scores each recording as a hint for reviewers — wired behind a provider interface and toggled per deployment. The verdict that pays out is always a human's, never the model's.
-
-That last point is the design: **AI suggests, humans decide.** Every recording in a PlayProof dataset carries a human signature, which is exactly what makes it worth training on.
+The one rule we didn't bend: the AI is allowed to *suggest*, but a human is the one who *decides*. Every clip that makes it into a dataset has a person's signature on it. That's the whole point — it's what separates this from another pile of scraped video.
 
 ## Try it in two minutes
 
